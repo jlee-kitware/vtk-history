@@ -68,16 +68,21 @@ class Repo:
         if missing:
             print(f"Fetching {len(missing)} revisions missing from the local clone", file=sys.stderr)
         for i in range(0, len(missing), FETCH_BATCH):
-            batch = missing[i:i + FETCH_BATCH]
-            if self.run("fetch", "-q", self.remote, *batch).returncode:
-                for s in batch:
-                    self.run("fetch", "-q", self.remote, s)
-            for s in batch:
-                self._present.pop(s, None)
-            self.check_present(batch)
+            self.fetch(missing[i:i + FETCH_BATCH])
+            print(f"  fetched through {min(i + FETCH_BATCH, len(missing))} of {len(missing)}", file=sys.stderr)
+        for s in missing:
+            self._present.pop(s, None)
+        self.check_present(missing)
         still = [s for s in missing if not self._present[s]]
         if still:
             print(f"{len(still)} revisions could not be fetched", file=sys.stderr)
+
+    def fetch(self, shas):
+        if not self.run("fetch", "-q", self.remote, *shas).returncode or len(shas) == 1:
+            return
+        half = len(shas) // 2
+        self.fetch(shas[:half])
+        self.fetch(shas[half:])
 
     def present(self, sha):
         return bool(sha) and self._present.get(sha, False)
