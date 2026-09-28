@@ -144,6 +144,7 @@ def main():
             continue
         record = d.topic(t["id"])
         if record:
+            record["topic"]["bumped_at"] = t["bumped_at"]
             write_json(path, record)
             fetched += 1
         if fetched and fetched % 50 == 0:
