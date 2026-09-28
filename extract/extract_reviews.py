@@ -12,7 +12,8 @@ Each output line is one review thread:
   reviewer   author of the first comment
   resolved   GitLab's resolved flag, when the thread was resolvable
   code       for "line": path, line, side, the diff hunk the reviewer saw,
-             and surrounding source at that revision
+             surrounding source at that revision, and (with --entities) the
+             module, class, and nearest ancestor classes
   acted_on   for "line": true if the author changed lines within 3 of the commented
              line between the revision the reviewer saw and the MR's final revision.
              A heuristic: a reply made elsewhere in the code reads as false.
@@ -171,6 +172,25 @@ def line_code(repo, pos, final_sha):
     return code, acted
 
 
+def module_for_path(path, dir_to_module):
+    parts = Path(path).parts
+    for i in range(len(parts) - 1, 0, -1):
+        module = dir_to_module.get(str(Path(*parts[:i])))
+        if module:
+            return module
+    return None
+
+
+def annotate(code, entities):
+    if not entities or not code.get("path"):
+        return
+    code["module"] = module_for_path(code["path"], entities["directories"])
+    cls = entities["classes"].get(Path(code["path"]).stem)
+    if cls:
+        code["class"] = Path(code["path"]).stem
+        code["ancestors"] = cls["ancestors"][:4]
+
+
 def needed_shas(record):
     shas = {record["merge_request"].get("sha")}
     for d in record["discussions"]:
@@ -180,7 +200,7 @@ def needed_shas(record):
     return shas
 
 
-def examples(record, repo):
+def examples(record, repo, entities=None):
     mr = record["merge_request"]
     summary = mr_summary(mr)
     for d in record["discussions"]:
@@ -195,6 +215,7 @@ def examples(record, repo):
             code, acted = line_code(repo, pos, mr.get("sha"))
             if code is None:
                 continue
+            annotate(code, entities)
             ex.update(kind="line", code=code, acted_on=acted)
         elif kind_raw in ("DiffNote", "LegacyDiffNote"):
             ex.update(kind="legacy")
@@ -213,8 +234,10 @@ def main():
     p.add_argument("--remote", default="upstream")
     p.add_argument("--out", default="data/review_examples.jsonl")
     p.add_argument("--no-fetch", action="store_true", help="use only revisions already in the local clone")
+    p.add_argument("--entities", default="ontology/entities.json", help="adds module and class to line threads")
     args = p.parse_args()
 
+    entities = json.loads(Path(args.entities).read_text()) if Path(args.entities).exists() else None
     repo = Repo(args.repo, args.remote)
     files = sorted(Path(args.mirror, "merge_requests").glob("*.json"), key=lambda f: int(f.stem))
     records = [json.loads(f.read_text()) for f in files]
@@ -228,7 +251,7 @@ def main():
     counts = {"line": 0, "legacy": 0, "general": 0, "approval": 0, "unavailable": 0, "acted_on": 0}
     with open(args.out, "w") as out:
         for r in records:
-            for ex in examples(r, repo):
+            for ex in examples(r, repo, entities):
                 counts[ex["kind"]] += 1
                 if ex.get("code", {}).get("unavailable"):
                     counts["unavailable"] += 1

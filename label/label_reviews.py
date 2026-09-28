@@ -55,6 +55,10 @@ def prompt_for(ex):
     location = f"Merge request: !{ex['mr']['iid']} {ex['mr']['title']}\n"
     if code.get("path"):
         location += f"File: {code['path']} line {code.get('line')}\n"
+    if code.get("module"):
+        location += f"Module: {code['module']}\n"
+    if code.get("class"):
+        location += f"Class: {code['class']} (derives from {' > '.join(code.get('ancestors') or []) or 'nothing'})\n"
     source = code.get("hunk") or code.get("context") or ""
     code_block = f"Code the reviewer saw:\n{source[:MAX_CODE_CHARS]}\n\n" if source else "\n"
     notes = ex["thread"][:MAX_NOTES]
