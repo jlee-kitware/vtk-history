@@ -16,14 +16,18 @@ The agent reads a local mirror of that history. It never queries the GitLab API 
 
 ## Mirror
 
-Use a `read_api` token from a gitlab.kitware.com account with no project or group memberships. That account sees only public content, so confidential issues and internal notes cannot enter the mirror. The script refuses a token whose account is a project member.
+The mirror stores every public discussion thread on VTK merge requests and issues, including line-level review comments and the diff positions they are attached to. It gets code from git, not the API: `--repo` fetches every merge request head into a local VTK clone, and diffs are reconstructed from the `base_sha` and `head_sha` recorded on each review comment. That leaves one API request per item.
+
+GitLab does not serve discussions anonymously, so a token is required. Use a `read_api` token from a gitlab.kitware.com account with no project or group memberships (create it in a private browser window). That account sees only public content, so confidential issues and internal notes cannot enter the mirror. The script refuses a token whose account is a project member.
 
 ```bash
 pip install -r requirements.txt
 export GITLAB_TOKEN=...
 python mirror/gitlab_mirror.py count
-python mirror/gitlab_mirror.py sync --limit 200     # trial run, sync point not saved
-python mirror/gitlab_mirror.py sync                 # full history, then incremental
+python mirror/gitlab_mirror.py sync --limit 200                   # trial run, sync point not saved
+python mirror/gitlab_mirror.py sync --repo /home/jlee/gitsync/vtk # full history, then incremental
 ```
 
-The mirror is written to `data/vtk-history/`, which is its own git repository (one commit per sync) and is excluded from this repository. Re-running `sync` fetches only items updated since the last sync and refetches each changed item's full history.
+The first full sync is about 20,000 requests at one per second (5 to 6 hours). Tell the GitLab administrators the window beforehand and run it overnight. The script backs off on HTTP 429 and 5xx responses, and an interrupted sync resumes where it stopped. Later syncs fetch only items updated since the previous one.
+
+The mirror is written to `data/vtk-history/`, which is its own git repository (one commit per completed sync) and is excluded from this repository.

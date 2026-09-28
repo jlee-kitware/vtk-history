@@ -1,25 +1,30 @@
 #!/usr/bin/env python3
-"""Mirror a GitLab project's merge request and issue history into a git repository.
+"""Mirror a GitLab project's merge request and issue discussions into a git repository.
 
-Each merge request and issue is stored as one JSON file:
+Each merge request and issue is stored as one JSON file holding the item and all of
+its public discussion threads, including line-level review comments with their
+diff positions:
 
   <out>/merge_requests/<iid>.json
   <out>/issues/<iid>.json
 
-A sync asks GitLab which items changed since the last sync, refetches each changed
-item's full history, and overwrites its file. The output directory is a git
-repository, so each sync is a commit and the repository can be published as-is.
+Code does not come from the API. Fetch every merge request's head into a local clone
+with --repo, and reconstruct diffs from the base_sha/head_sha recorded on each review
+comment. Links between issues and merge requests are parsed from the text later.
+That leaves one API call per item (more only for very long threads).
 
-Use a token from an account with no project or group memberships. Such an account
-sees only what an anonymous visitor sees, so confidential issues and internal
-notes cannot leak into the mirror. The script refuses to run with a token that has
-membership access to the project.
+A sync asks GitLab which items changed since the last sync and refetches their full
+discussions. An interrupted sync resumes where it stopped. The output directory is a
+git repository with one commit per completed sync.
+
+The token must come from an account with no project or group memberships, so it sees
+only public content. The script refuses a token that can see private content.
 
 Usage:
-  export GITLAB_TOKEN=...          # read_api scope, from a no-membership account
+  export GITLAB_TOKEN=...
   python mirror/gitlab_mirror.py count
-  python mirror/gitlab_mirror.py sync --out data/vtk-history --limit 200
-  python mirror/gitlab_mirror.py sync --out data/vtk-history
+  python mirror/gitlab_mirror.py sync --limit 200
+  python mirror/gitlab_mirror.py sync --repo /home/jlee/gitsync/vtk
 """
 
 import argparse
@@ -39,31 +44,25 @@ class GitLab:
     def __init__(self, url, token, delay):
         self.api = url.rstrip("/") + "/api/v4"
         self.delay = delay
+        self.requests = 0
         self.session = requests.Session()
         self.session.headers.update({
             "PRIVATE-TOKEN": token,
-            "User-Agent": "kitware-history-mirror/0.2",
+            "User-Agent": "kitware-history-mirror/0.3 (contact: jeff.lee@kitware.com)",
         })
 
     def get(self, path, params=None):
         while True:
             time.sleep(self.delay)
+            self.requests += 1
             r = self.session.get(self.api + path, params=params, timeout=120)
             if r.status_code == 429 or r.status_code >= 500:
-                wait = int(r.headers.get("Retry-After", 60))
+                wait = int(r.headers.get("Retry-After", 120))
                 print(f"  HTTP {r.status_code} on {path}; waiting {wait}s", file=sys.stderr)
                 time.sleep(wait)
                 continue
             r.raise_for_status()
             return r
-
-    def get_json(self, path, params=None, default=None):
-        try:
-            return self.get(path, params).json()
-        except requests.HTTPError as e:
-            if default is not None and e.response.status_code in (403, 404):
-                return default
-            raise
 
     def paged(self, path, params=None):
         params = dict(params or {}, per_page=100, page=1)
@@ -89,48 +88,36 @@ def public_discussions(discussions):
     return kept
 
 
-def write_record(path, record):
+def write_json(path, record):
     path.write_text(json.dumps(record, indent=1, sort_keys=True, ensure_ascii=False) + "\n")
 
 
-def fetch_merge_request(gl, pid, mr, all_versions):
-    base = f"/projects/{pid}/merge_requests/{mr['iid']}"
-    versions = list(gl.paged(base + "/versions"))
-    wanted = versions if all_versions else ([versions[-1], versions[0]] if len(versions) > 1 else versions)
-    return {
-        "merge_request": mr,
-        "discussions": public_discussions(gl.paged(base + "/discussions")),
-        "versions": versions,
-        "version_diffs": {str(v["id"]): gl.get_json(f"{base}/versions/{v['id']}", default={}) for v in wanted},
-        "commits": list(gl.paged(base + "/commits")),
-        "closes_issues": list(gl.paged(base + "/closes_issues")),
-        "approvals": gl.get_json(base + "/approvals", default={}),
-    }
+def fetch(gl, pid, kind, item):
+    discussions = public_discussions(gl.paged(f"/projects/{pid}/{kind}/{item['iid']}/discussions"))
+    key = "merge_request" if kind == "merge_requests" else "issue"
+    return {key: item, "discussions": discussions}
 
 
-def fetch_issue(gl, pid, issue):
-    base = f"/projects/{pid}/issues/{issue['iid']}"
-    return {
-        "issue": issue,
-        "discussions": public_discussions(gl.paged(base + "/discussions")),
-        "related_merge_requests": list(gl.paged(base + "/related_merge_requests")),
-    }
-
-
-def sync_kind(gl, pid, out, kind, since, limit, fetch):
+def sync_kind(gl, pid, out, kind, since, limit, state, state_file):
     folder = out / kind
     folder.mkdir(exist_ok=True)
+    resume = state.setdefault("resume", {}).get(kind)
     params = {"state": "all", "order_by": "updated_at", "sort": "asc"}
-    if since:
-        params["updated_after"] = since
+    if resume or since:
+        params["updated_after"] = resume or since
     if kind == "issues":
         params["confidential"] = "false"
+    print(f"{kind}: {'resuming from ' + resume if resume else 'starting'}")
+
     n = 0
     for item in gl.paged(f"/projects/{pid}/{kind}", params):
-        write_record(folder / f"{item['iid']}.json", fetch(item))
+        write_json(folder / f"{item['iid']}.json", fetch(gl, pid, kind, item))
         n += 1
         if n % 25 == 0:
-            print(f"  {n} {kind} (last {item['iid']}, updated {item['updated_at']})")
+            if not limit:
+                state["resume"][kind] = item["updated_at"]
+                write_json(state_file, state)
+            print(f"  {n} {kind}, {gl.requests} requests (last {item['iid']}, updated {item['updated_at']})")
         if limit and n >= limit:
             break
     print(f"{kind}: {n} written")
@@ -140,19 +127,20 @@ def sync_kind(gl, pid, out, kind, since, limit, fetch):
 def count(gl, pid):
     print("Merge requests (all):   ", gl.total(f"/projects/{pid}/merge_requests", {"state": "all"}))
     print("Merge requests (merged):", gl.total(f"/projects/{pid}/merge_requests", {"state": "merged"}))
-    print("Issues (visible):       ", gl.total(f"/projects/{pid}/issues", {"state": "all"}))
+    print("Issues (public):        ", gl.total(f"/projects/{pid}/issues", {"state": "all", "confidential": "false"}))
 
-    sample = gl.get_json(f"/projects/{pid}/merge_requests",
-                         {"state": "merged", "order_by": "updated_at", "per_page": 50})
-    human_notes = [
-        sum(1 for n in gl.paged(f"/projects/{pid}/merge_requests/{mr['iid']}/notes") if not n.get("system"))
-        for mr in sample
-    ]
-    if human_notes:
-        reviewed = sum(1 for n in human_notes if n >= 3)
-        print(f"Sample of {len(human_notes)} recent merged MRs: "
-              f"{sum(human_notes) / len(human_notes):.1f} human comments on average, "
-              f"{reviewed} with 3 or more")
+    sample = gl.get(f"/projects/{pid}/merge_requests",
+                    {"state": "merged", "order_by": "updated_at", "per_page": 50}).json()
+    comments, line_comments = [], []
+    for mr in sample:
+        notes = [n for d in gl.paged(f"/projects/{pid}/merge_requests/{mr['iid']}/discussions")
+                 for n in d["notes"] if not n.get("system")]
+        comments.append(len(notes))
+        line_comments.append(sum(1 for n in notes if n.get("type") == "DiffNote"))
+    print(f"Sample of {len(sample)} recent merged MRs: "
+          f"{sum(comments) / len(sample):.1f} human comments per MR, "
+          f"{sum(line_comments) / len(sample):.1f} line-level review comments per MR, "
+          f"{sum(1 for c in comments if c >= 3)} MRs with 3 or more comments")
 
 
 def check_no_membership(project):
@@ -162,8 +150,13 @@ def check_no_membership(project):
                  "Create a token from an account with no memberships, so the mirror holds only public data.")
 
 
-def git(out, *args):
-    subprocess.run(["git", "-C", str(out), *args], check=True)
+def git(repo, *args):
+    subprocess.run(["git", "-C", str(repo), *args], check=True)
+
+
+def fetch_mr_refs(repo, remote):
+    print(f"Fetching merge request heads into {repo} (refs/remotes/{remote}/mr/*)")
+    git(repo, "fetch", "--quiet", remote, f"+refs/merge-requests/*/head:refs/remotes/{remote}/mr/*")
 
 
 def main():
@@ -172,47 +165,56 @@ def main():
     p.add_argument("--url", default="https://gitlab.kitware.com")
     p.add_argument("--project", default="vtk/vtk")
     p.add_argument("--out", default="data/vtk-history")
-    p.add_argument("--delay", type=float, default=0.5, help="seconds between requests")
+    p.add_argument("--repo", help="local clone to fetch merge request heads into")
+    p.add_argument("--remote", default="upstream", help="remote in --repo that points at the upstream project")
+    p.add_argument("--delay", type=float, default=1.0, help="seconds between requests")
     p.add_argument("--limit", type=int, default=0, help="stop after N merge requests and N issues (trial run)")
     p.add_argument("--since", help="ISO timestamp; overrides the saved sync point")
-    p.add_argument("--all-versions", action="store_true", help="fetch diffs for every MR revision")
     p.add_argument("--no-commit", action="store_true", help="write files without committing")
     args = p.parse_args()
 
     token = os.environ.get("GITLAB_TOKEN")
     if not token:
-        sys.exit("Set GITLAB_TOKEN to a read_api token from an account with no project memberships.")
+        sys.exit("Set GITLAB_TOKEN to a read_api token from an account with no project memberships.\n"
+                 "GitLab does not serve discussions to anonymous requests.")
 
     gl = GitLab(args.url, token, args.delay)
     pid = quote(args.project, safe="")
-    project = gl.get_json(f"/projects/{pid}")
+    project = gl.get(f"/projects/{pid}").json()
     print(f"Project: {project['path_with_namespace']} (id {project['id']})")
     check_no_membership(project)
 
     if args.mode == "count":
         count(gl, pid)
+        print(f"{gl.requests} requests")
         return
+
+    if args.repo:
+        fetch_mr_refs(args.repo, args.remote)
 
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
     if not (out / ".git").exists():
-        git(out, "init", "-q")
+        git(out, "init", "-q", "-b", "main")
 
     state_file = out / "sync.json"
     state = json.loads(state_file.read_text()) if state_file.exists() else {}
+    state["project"] = project["path_with_namespace"]
     since = args.since or state.get("updated_after")
     started = datetime.now(timezone.utc).isoformat()
-    print(f"Syncing into {out}/ ({'changes since ' + since if since else 'full history'})")
+    print(f"Syncing into {out}/ ({'changes since ' + since if since else 'full history'}), "
+          f"{args.delay}s between requests")
 
-    changed = sync_kind(gl, pid, out, "merge_requests", since, args.limit,
-                        lambda mr: fetch_merge_request(gl, pid, mr, args.all_versions))
-    changed += sync_kind(gl, pid, out, "issues", since, args.limit,
-                         lambda issue: fetch_issue(gl, pid, issue))
+    changed = sum(sync_kind(gl, pid, out, kind, since, args.limit, state, state_file)
+                  for kind in ("merge_requests", "issues"))
+    print(f"{gl.requests} requests")
 
     if args.limit:
         print("Trial run: sync point not saved.")
         return
-    write_record(state_file, {"project": project["path_with_namespace"], "updated_after": started})
+    state["updated_after"] = started
+    state.pop("resume", None)
+    write_json(state_file, state)
 
     if not args.no_commit:
         git(out, "add", "-A")
