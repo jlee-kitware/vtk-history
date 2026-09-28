@@ -6,13 +6,33 @@ The agent reads a local mirror of that history. It never queries the GitLab API 
 
 ## Plan
 
-1. **Mirror.** Sync public MR and issue history into a git repository, one JSON file per item. (`mirror/`)
-2. **Review examples.** For each line-level review comment, pair the comment with the code hunk it was attached to, and record whether the author changed that code in the next revision.
+1. **Mirror.** Sync public MR and issue discussions into a git repository, one JSON file per item. (`mirror/`, done)
+2. **Review examples.** For each review thread, recover the code the reviewer saw from the local VTK clone and record whether the author changed it afterward. (`extract/`, done)
 3. **Rules.** Cluster the examples into recurring review conventions and curate them into `REVIEW_RULES.md`, with links to the source comments.
-4. **Index.** Retrieve past reviews by file path, module, VTK APIs touched, and embedding similarity.
-5. **Agent.** For each hunk of a new MR, retrieve similar past reviews and applicable rules, and produce findings that each cite a rule or a past review. Findings without a citation are dropped.
-6. **Evaluation.** Index only MRs merged before a cutoff date. Run the agent on the first submitted version of later MRs and compare its findings to what human reviewers said (precision, recall, findings per MR).
-7. **Deployment.** Shadow mode first (private reports), then on request, then by default.
+4. **Design dossiers.** One summary per module or major class: its purpose, the key decisions and the MRs where they were made, approaches tried and reverted, known pitfalls, and deprecations. Built from git history, MR discussions, and issues, and updated as new MRs merge.
+5. **Index.** Retrieve past reviews by file path, module, VTK APIs touched, and embedding similarity.
+6. **Agent.** An agent loop that investigates each change with tools before writing findings (see below). Every finding cites a rule, a past review, or a commit; findings without a citation are dropped.
+7. **Evaluation.** Index only MRs merged before a cutoff date. Run the agent on the first submitted version of later MRs and compare its findings to what human reviewers said (precision, recall, findings per MR).
+8. **Deployment.** Shadow mode first (private reports), then on request, then by default. Rejected findings feed back into the rules and dossiers.
+
+## Agent tools
+
+The agent chooses which of these to use for each change:
+
+- `search_reviews`: past review threads on similar code, by path, module, API, and text
+- `file_history`: `git log`, `git blame`, and the MRs behind a file or line range
+- `design_dossier`: the dossier for a module or class
+- `review_rules`: the curated conventions that apply to the change
+- `search_issues`: related bug reports, including fixes that were reverted
+- `read_code`: surrounding source, callers, and tests at the MR's revision
+
+## Review examples
+
+```bash
+python extract/extract_reviews.py --mirror data/vtk-history --repo /home/jlee/gitsync/vtk
+```
+
+Writes `data/review_examples.jsonl`, one review thread per line, tagged `line` (with the diff hunk and surrounding source at the reviewed revision), `legacy` (pre-2016 line comments whose positions GitLab no longer has), `general`, or `approval`. Merge robot and CI bot messages, robot command lines, and mention-only comments are removed. Revisions missing from the clone are fetched from `upstream` by hash.
 
 ## Mirror
 
