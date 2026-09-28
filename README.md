@@ -26,6 +26,15 @@ The agent chooses which of these to use for each change:
 - `search_issues`: related bug reports, including fixes that were reverted
 - `read_code`: surrounding source, callers, and tests at the MR's revision
 
+## Data sources
+
+Added in this order; each goes through the same mirror, extract, label, and index steps.
+
+1. GitLab merge requests and issues (`mirror/gitlab_mirror.py`). Issues include the Mantis reports migrated in 2016 (titles and report text).
+2. VTK Discourse (`mirror/discourse_mirror.py`): about 7,800 public topics, one file per topic, about 8,000 requests. Posts are CC BY-NC-SA 3.0, recorded on each file.
+3. Mantis discussions (2003 to 2016), from the frozen HTML export at `vtk.org/Bug/view.php?id=N`; the IDs come from the migrated GitLab issues.
+4. The vtkusers and vtk-developers mailing lists, if the Mailman archives can be obtained.
+
 ## Review examples
 
 ```bash
