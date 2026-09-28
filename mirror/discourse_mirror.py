@@ -28,6 +28,7 @@ from pathlib import Path
 import requests
 
 LICENSE = "CC BY-NC-SA 3.0 (https://creativecommons.org/licenses/by-nc-sa/3.0/)"
+POSTS_PER_REQUEST = 20
 POST_FIELDS = ("id", "post_number", "username", "name", "created_at", "updated_at", "reply_to_post_number",
                "cooked", "accepted_answer", "staff", "post_type", "reads", "score")
 
@@ -50,7 +51,9 @@ class Discourse:
                 print(f"  HTTP {r.status_code} on {path}; waiting {wait}s", file=sys.stderr)
                 time.sleep(wait)
                 continue
-            if r.status_code in (403, 404):
+            if r.status_code in (403, 404, 410, 422):
+                if r.status_code == 422:
+                    print(f"  HTTP 422 on {path}; skipped", file=sys.stderr)
                 return None
             r.raise_for_status()
             return r.json()
@@ -66,7 +69,7 @@ class Discourse:
             page += 1
 
     def topic(self, topic_id):
-        data = self.get(f"/t/{topic_id}.json", {"print": "true"})
+        data = self.get(f"/t/{topic_id}.json")
         if not data:
             return None
         posts = data["post_stream"]["posts"]
@@ -74,8 +77,8 @@ class Discourse:
         if len(posts) < len(stream):
             have = {p["id"] for p in posts}
             missing = [pid for pid in stream if pid not in have]
-            for i in range(0, len(missing), 100):
-                extra = self.get(f"/t/{topic_id}/posts.json", {"post_ids[]": missing[i:i + 100]})
+            for i in range(0, len(missing), POSTS_PER_REQUEST):
+                extra = self.get(f"/t/{topic_id}/posts.json", {"post_ids[]": missing[i:i + POSTS_PER_REQUEST]})
                 posts += (extra or {}).get("post_stream", {}).get("posts", [])
         posts.sort(key=lambda p: p["post_number"])
         return {
