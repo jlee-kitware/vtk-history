@@ -52,10 +52,19 @@ class GitLab:
         })
 
     def get(self, path, params=None):
+        dropped = 0
         while True:
             time.sleep(self.delay)
             self.requests += 1
-            r = self.session.get(self.api + path, params=params, timeout=120)
+            try:
+                r = self.session.get(self.api + path, params=params, timeout=120)
+            except (requests.ConnectionError, requests.Timeout) as e:
+                dropped += 1
+                if dropped > 5:
+                    raise
+                print(f"  connection error on {path} ({type(e).__name__}); retrying in {60 * dropped}s", file=sys.stderr)
+                time.sleep(60 * dropped)
+                continue
             if r.status_code == 429 or r.status_code >= 500:
                 wait = int(r.headers.get("Retry-After", 120))
                 print(f"  HTTP {r.status_code} on {path}; waiting {wait}s", file=sys.stderr)
