@@ -38,7 +38,9 @@ Reviewer's comment:
 Predicted comment:
 "{prediction}"
 
-Do they raise the same concern, so that acting on one would resolve the other? Reply {{"same": true}} or {{"same": false}}."""
+Do they raise the same specific concern, so that making the change one asks for would also resolve the other? Comments about different problems are not the same concern, even when they are on the same lines or both mention the same code. A predicted comment that argues against what the reviewer asked is not the same concern. A predicted comment that asks for the same change in different words, or asks for part of it, is the same concern.
+Reply {{"same": true}} or {{"same": false}}."""
+GOLD = Path(__file__).resolve().parent / "judge_gold.json"
 
 
 def safe_rules(rules_path, examples_path, benchmark_iids, min_mrs=3):
@@ -57,6 +59,16 @@ def safe_rules(rules_path, examples_path, benchmark_iids, min_mrs=3):
 def same_concern(judge, answer, prediction):
     out = chat(judge, JUDGE_SYSTEM, JUDGE_USER.format(answer=answer[:1200], prediction=prediction[:1200]), num_ctx=4096)
     return bool(out.get("same"))
+
+
+def check_judge(judge, max_misses=1):
+    gold = json.loads(GOLD.read_text())
+    misses = [g for g in gold if same_concern(judge, g["answer"], g["prediction"]) != g["same"]]
+    print(f"judge {judge}: {len(gold) - len(misses)}/{len(gold)} known cases correct", flush=True)
+    for g in misses:
+        print(f"  missed ({g['source']}, expected {g['same']}): {g['prediction'][:100]}", flush=True)
+    if len(misses) > max_misses:
+        sys.exit("judge is not reliable enough; scores would be misleading")
 
 
 def score(mr, predictions, judge, window):
@@ -82,7 +94,7 @@ def main():
     p.add_argument("--rules", default="data/rules_verified.json")
     p.add_argument("--repo", default="/home/jlee/gitsync/vtk")
     p.add_argument("--model", default="nemotron-3.5-lightning:latest")
-    p.add_argument("--judge", default="nemotron3:33b")
+    p.add_argument("--judge", default="nemotron-3.5-lightning:latest")
     p.add_argument("--limit", type=int, default=0)
     p.add_argument("--seed", type=int, default=11)
     p.add_argument("--window", type=int, default=5)
@@ -95,6 +107,7 @@ def main():
         bench = random.Random(args.seed).sample(bench, args.limit)
     rules = safe_rules(args.rules, args.examples, iids)
     print(f"{len(bench)} MRs; {len(rules)} rules usable without benchmark evidence", flush=True)
+    check_judge(args.judge)
 
     out = Path(args.out) / args.model.replace(":", "_").replace("/", "_")
     out.mkdir(parents=True, exist_ok=True)
@@ -108,10 +121,10 @@ def main():
         else:
             until = min(a["created_at"] for a in mr["answers"])[:10]
             start = time.time()
-            predictions, hunks = reviewer.review(mr["base_sha"], mr["head_sha"], mr["mr"]["title"], until,
-                                                 exclude_ref=f"!{iid}")
-            record = {"mr": mr["mr"], "until": until, "hunks": hunks, "seconds": round(time.time() - start),
-                      "predictions": predictions}
+            predictions, hunks, drafted = reviewer.review(mr["base_sha"], mr["head_sha"], mr["mr"]["title"], until,
+                                                          exclude_ref=f"!{iid}")
+            record = {"mr": mr["mr"], "until": until, "hunks": hunks, "drafted": drafted,
+                      "seconds": round(time.time() - start), "predictions": predictions}
             record["score"] = score(mr, predictions, args.judge, args.window)
             cache.write_text(json.dumps(record, indent=1, ensure_ascii=False))
         s = record["score"]

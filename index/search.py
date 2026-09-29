@@ -18,6 +18,7 @@ import json
 import re
 import sqlite3
 import sys
+import threading
 import urllib.request
 from pathlib import Path
 
@@ -38,8 +39,7 @@ private protected virtual override include define endif ifndef std size_t vtkIdT
 class Index:
     def __init__(self, path="data/index"):
         self.path = Path(path)
-        self.con = sqlite3.connect(self.path / "docs.sqlite", check_same_thread=False)
-        self.con.row_factory = sqlite3.Row
+        self._local = threading.local()
         meta = self.path / "meta.json"
         self.meta = json.loads(meta.read_text()) if meta.exists() else None
         self.vectors = None
@@ -48,6 +48,20 @@ class Index:
             cols = self.con.execute("SELECT kind, date, module, class, path, author FROM docs ORDER BY rowid").fetchall()
             self.cols = {name: np.array([c[i] or "" for c in cols]) for i, name in
                          enumerate(("kind", "date", "module", "class", "path", "author"))}
+
+    @property
+    def con(self):
+        """One SQLite connection per thread; a shared connection corrupts concurrent cursors."""
+        if not hasattr(self._local, "con"):
+            self._local.con = sqlite3.connect(self.path / "docs.sqlite")
+            self._local.con.row_factory = sqlite3.Row
+        return self._local.con
+
+    def embed(self, texts, query=True):
+        payload = {"model": self.meta["model"], "input": [INSTRUCT + t if query else t for t in texts], "truncate": True}
+        req = urllib.request.Request(HOST + "/api/embed", json.dumps(payload).encode(), {"Content-Type": "application/json"})
+        v = np.asarray(json.load(urllib.request.urlopen(req, timeout=300))["embeddings"], np.float32)[:, :self.meta["dim"]]
+        return v / np.linalg.norm(v, axis=1, keepdims=True)
 
     def _where(self, f):
         clauses, params = [], []
@@ -83,11 +97,7 @@ class Index:
     def meaning(self, query, n, **f):
         if self.vectors is None:
             return []
-        req = urllib.request.Request(HOST + "/api/embed", json.dumps(
-            {"model": self.meta["model"], "input": [INSTRUCT + query], "truncate": True}).encode(),
-            {"Content-Type": "application/json"})
-        q = np.asarray(json.load(urllib.request.urlopen(req, timeout=120))["embeddings"][0], np.float32)[:self.meta["dim"]]
-        scores = self.vectors @ (q / np.linalg.norm(q))
+        scores = self.vectors @ self.embed([query])[0]
         mask = np.ones(len(scores), bool)
         for col in ("kind", "module", "class", "author"):
             if f.get(col):

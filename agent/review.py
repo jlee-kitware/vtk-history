@@ -5,12 +5,13 @@ For each changed hunk between a base and head commit, gather evidence and ask a 
 whether a VTK reviewer would comment:
 
   precedent     past review threads most similar to the hunk, and past threads on the same file
-  rules         the review rules (REVIEW_RULES.md), each with an id
+  rules         the review rules most similar to the hunk, each with an id
   deprecations  deprecated or removed APIs that appear in the added lines
 
 History is limited to dates before --until, so an evaluation never sees the answers.
-The model returns zero or more comments, each tied to a new-side line and to the
-evidence it relies on.
+Each hunk yields at most one or two draft comments tied to new-side lines. A final pass
+drops near-duplicates and keeps about one comment per six hunks (at least two): the
+ones the model judges a maintainer would actually post.
 
 Usage:
   python agent/review.py --base <sha> --head <sha> --until 2025-12-17
@@ -35,14 +36,20 @@ MAX_HUNK_LINES = 120
 
 SYSTEM = """You review merge requests for VTK, the Visualization Toolkit, the way its maintainers do.
 
-You will see one changed hunk from a merge request, with evidence from VTK's review history: similar past review threads, past threads on the same file, deprecated APIs in the new code, and the project's review rules below.
+You will see one changed hunk from a merge request, with evidence from VTK's review history: similar past review threads, past threads on the same file, deprecated APIs in the new code, and the review rules most related to this hunk.
 
-Comment only where an experienced VTK reviewer would. Most hunks need no comment. Do not restate what the code does, praise it, or raise generic style points the rules and precedent do not support. A good comment names a specific problem or VTK convention and says what to do instead.
+VTK reviewers comment on roughly one hunk in seven. Most hunks need no comment, so an empty list is the usual answer. Comment only when the added lines themselves show a specific problem: a bug, a misuse of a VTK API, a missing test or release note detail, or a clear break from a rule listed below. Do not apply a rule unless the added lines violate it. Do not restate what the code does, praise it, ask the author to "verify" or "ensure" something without saying what is wrong, or suggest changes to lines the hunk did not add.
 
-Review rules:
-{rules}
+Give at most one comment, or two if one of them is a bug. Write it the way a VTK maintainer would: short, direct, and naming what to change.
 
-Reply with JSON only: {{"comments": [{{"line": <new-file line number from the hunk>, "comment": "<what the reviewer would write>", "basis": "<rule id, past MR (e.g. !1234), deprecation, or 'code'>", "severity": "bug" | "convention" | "nit" | "question"}}]}}. Use an empty list when nothing needs a comment."""
+Reply with JSON only: {"comments": [{"line": <new-file line number of an added line>, "comment": "<what the reviewer would write>", "basis": "<rule id, past MR (e.g. !1234), deprecation, or 'code'>", "severity": "bug" | "convention" | "nit" | "question"}]}."""
+
+SELECT = """These are candidate review comments on one VTK merge request, titled "{title}". A VTK maintainer reviewing it would post about {k} comments.
+
+{candidates}
+
+Keep at most {k}: the comments a VTK maintainer would actually post, preferring bugs, API misuse, and concrete requested changes. Drop generic style advice, speculation, requests to "verify" or "check", and duplicates.
+Reply with JSON only: {{"keep": [<candidate numbers>]}}"""
 
 USER = """Merge request: {title}
 File: {path}
@@ -57,7 +64,11 @@ Past review threads on this file:
 {file_history}
 
 Deprecated APIs used in the added lines:
-{deprecations}"""
+{deprecations}
+
+Review rules most related to this hunk:
+{rules}"""
+RULES_PER_HUNK = 6
 
 
 def git(repo, *args):
@@ -130,7 +141,8 @@ class Reviewer:
         self.repo, self.model = repo, model
         self.index = Index(index)
         self.rules = rules if rules is not None else load_rules(rules_path)
-        self.system = SYSTEM.format(rules="\n".join(f"{r['id']}: {r['rule']}" for r in self.rules))
+        self.system = SYSTEM
+        self.rule_vectors = self.index.embed([f"{r['rule']} ({r.get('scope') or ''})" for r in self.rules], query=False)
         self.deprecated = {}
         for line in open(deprecations):
             rec = json.loads(line)
@@ -161,12 +173,18 @@ class Reviewer:
                 notes.append(f"- {r['class']}::{sym} {state}{mr}: {r['reason'] or 'no reason given'}")
         return "\n".join(list(dict.fromkeys(notes))[:8]) or "(none)"
 
+    def _related_rules(self, text):
+        scores = self.rule_vectors @ self.index.embed([text])[0]
+        top = scores.argsort()[::-1][:RULES_PER_HUNK]
+        return "\n".join(f"{self.rules[i]['id']}: {self.rules[i]['rule']}" for i in top)
+
     def review_hunk(self, title, path, hunk, added, numbers, until, exclude_ref):
-        precedent = self.index.search(f"{path}\n{added[:1500]}", k=5, kind="thread", until=until)
+        query = f"{path}\n{added[:1500]}"
+        precedent = self.index.search(query, k=5, kind="thread", until=until)
         on_file = self.index.search(added[:800], k=4, kind="thread", path=path, until=until)
         user = USER.format(title=title, path=path, hunk=hunk, precedent=self._threads(precedent, exclude_ref),
                            file_history=self._threads(on_file, exclude_ref),
-                           deprecations=self._deprecations(path, added, until))
+                           deprecations=self._deprecations(path, added, until), rules=self._related_rules(query))
         out = chat(self.model, self.system, user).get("comments") or []
         comments = []
         for c in out if isinstance(out, list) else []:
@@ -183,12 +201,32 @@ class Reviewer:
                              "evidence": [h["ref"] for h in precedent + on_file if h["ref"] != exclude_ref]})
         return comments
 
-    def review(self, base, head, title, until, exclude_ref=None, max_hunks=60, parallel=2):
+    def select(self, title, candidates, k):
+        """Keep the k comments a maintainer would post, after dropping near-duplicates."""
+        unique = []
+        for c in candidates:
+            if not any(u["path"] == c["path"] and abs(u["line"] - c["line"]) <= 3 for u in unique):
+                unique.append(c)
+        if len(unique) <= k:
+            return unique
+        listing = "\n".join(f"{i}. {c['path']}:{c['line']} [{c['severity']}] {c['comment'][:400]}"
+                            for i, c in enumerate(unique))
+        out = chat(self.model, "You select code review comments. Reply with JSON only.",
+                   SELECT.format(title=title, k=k, candidates=listing), num_ctx=32768)
+        keep = [i for i in out.get("keep") or [] if isinstance(i, int) and 0 <= i < len(unique)]
+        if not keep:
+            order = {"bug": 0, "question": 1, "convention": 2, "nit": 3}
+            keep = sorted(range(len(unique)), key=lambda i: order.get(unique[i]["severity"], 4))
+        return [unique[i] for i in dict.fromkeys(keep)][:k]
+
+    def review(self, base, head, title, until, exclude_ref=None, max_hunks=60, parallel=2, per_hunks=6):
         from concurrent.futures import ThreadPoolExecutor
         todo = list(hunks(self.repo, base, head))[:max_hunks]
         with ThreadPoolExecutor(parallel) as pool:
             results = pool.map(lambda h: self.review_hunk(title, *h, until, exclude_ref), todo)
-        return [c for cs in results for c in cs], len(todo)
+        candidates = [c for cs in results for c in cs]
+        k = max(2, -(-len(todo) // per_hunks))
+        return self.select(title, candidates, k), len(todo), len(candidates)
 
 
 def main():
@@ -200,8 +238,8 @@ def main():
     p.add_argument("--until", required=True, help="use only history before this date (YYYY-MM-DD)")
     p.add_argument("--model", default="nemotron-3.5-lightning:latest")
     args = p.parse_args()
-    comments, n = Reviewer(args.repo, args.model).review(args.base, args.head, args.title, args.until)
-    print(f"{len(comments)} comments on {n} hunks")
+    comments, n, drafted = Reviewer(args.repo, args.model).review(args.base, args.head, args.title, args.until)
+    print(f"{len(comments)} comments kept of {drafted} drafted on {n} hunks")
     for c in comments:
         print(f"{c['path']}:{c['line']} [{c['severity']}, {c['basis']}]\n    {c['comment']}\n")
 
