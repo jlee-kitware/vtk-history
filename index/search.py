@@ -28,6 +28,11 @@ INSTRUCT = ("Instruct: Given a question or code change about the VTK library, re
             "merge requests, issues, and forum posts that are relevant\nQuery: ")
 RRF_K = 60
 TOKEN = re.compile(r"[A-Za-z0-9_]{2,}")
+CODE_SHAPED = re.compile(r"[a-z][A-Z]|_|^vtk")
+COMMON = set("""the and for this that with from are was not but can will should would could has have had its into
+if else return const int double float void auto true false nullptr this new delete static class struct public
+private protected virtual override include define endif ifndef std size_t vtkIdType for while do break continue
+""".split())
 
 
 class Index:
@@ -61,16 +66,18 @@ class Index:
             params.append(f["path"] + "%")
         return (" AND " + " AND ".join(clauses)) if clauses else "", params
 
-    def keyword(self, query, n, **f):
-        terms = TOKEN.findall(query)
+    def keyword(self, query, n, max_terms=40, **f):
+        seen = dict.fromkeys(t for t in TOKEN.findall(query) if t.lower() not in COMMON)
+        terms = sorted(seen, key=lambda t: (not CODE_SHAPED.search(t), -len(t)))[:max_terms]
         if not terms:
             return []
         match = " OR ".join(f'"{t}"' for t in terms)
         where, params = self._where(f)
         rows = self.con.execute(
-            f"SELECT d.rowid FROM docs_fts JOIN docs d ON d.rowid = docs_fts.rowid "
-            f"WHERE docs_fts MATCH ?{where} ORDER BY bm25(docs_fts, 2.0, 1.0, 3.0, 3.0) LIMIT ?",
-            [match, *params, n]).fetchall()
+            "WITH hits AS MATERIALIZED (SELECT rowid, bm25(docs_fts, 2.0, 1.0, 3.0, 3.0) AS s FROM docs_fts "
+            "WHERE docs_fts MATCH ? ORDER BY s LIMIT ?) "
+            f"SELECT h.rowid FROM hits h JOIN docs d ON d.rowid = h.rowid WHERE 1=1{where} ORDER BY h.s LIMIT ?",
+            [match, max(2000, 40 * n), *params, n]).fetchall()
         return [r[0] for r in rows]
 
     def meaning(self, query, n, **f):
