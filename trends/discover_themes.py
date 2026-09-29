@@ -154,13 +154,14 @@ def main():
     p.add_argument("--last-quarter", default="2026Q2")
     p.add_argument("--top", type=int, default=25)
     p.add_argument("--out", default="data/trends")
+    p.add_argument("--cache", default="data/trends/doc_embeddings.npy")
     args = p.parse_args()
 
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
     docs = load_documents(args.mirror, args.discourse)
     print(f"{len(docs)} documents ({Counter(d['source'] for d in docs)})", flush=True)
-    vectors = embed(docs, args.embed_model, out / "doc_embeddings.npy")
+    vectors = embed(docs, args.embed_model, Path(args.cache))
 
     centers, labels = kmeans2(vectors, args.k, minit="++", seed=args.seed, iter=50)
     centers = centers / np.linalg.norm(centers, axis=1, keepdims=True)

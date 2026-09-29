@@ -30,8 +30,10 @@ import json
 import math
 import re
 import subprocess
-from collections import defaultdict
+from collections import Counter, defaultdict
 from pathlib import Path
+
+from wordfreq import zipf_frequency
 
 STOPWORDS = set("""
 a about above after again against all also am an and any are as at be because been before being below between both
@@ -47,15 +49,24 @@ MIN_DOCS = 15
 SMOOTH = 4
 RECENT, EARLIER, START = 8, 16, 12
 MIN_RATIO = 2.5
+COMMON_ZIPF = 3.5
+
+
+def is_common(token):
+    return token.islower() and not CODE_LIKE.search(token) and zipf_frequency(token, "en") >= COMMON_ZIPF
 
 
 def quarter(ts):
     return f"{ts[:4]}Q{(int(ts[5:7]) - 1) // 3 + 1}"
 
 
+URL = re.compile(r"https?://\S+|\S+@\S+")
+MENTION = re.compile(r"@[\w.-]+")
+
+
 def tokens(text):
     out = set()
-    for w in WORD.findall(text or ""):
+    for w in WORD.findall(MENTION.sub(" ", URL.sub(" ", text or ""))):
         w = w.strip(".-")
         if len(w) < 3:
             continue
@@ -76,10 +87,20 @@ def strip_html(s):
     return html.unescape(re.sub(r"<[^>]+>", " ", s or ""))
 
 
+def people_names(record, people):
+    for user in [record["merge_request"]["author"]] + [n["author"] for d in record.get("discussions") or []
+                                                        for n in d.get("notes", [])]:
+        if re.search(r"bot|ghost|project|release|robot", f"{user['username']} {user['name']}", re.I):
+            continue
+        people.add(user["username"].lower())
+
+
 def load_documents(mirror, discourse, repo):
-    docs = []
+    docs, people = [], set()
     for f in glob.glob(f"{mirror}/merge_requests/*.json"):
-        mr = json.load(open(f))["merge_request"]
+        record = json.load(open(f))
+        people_names(record, people)
+        mr = record["merge_request"]
         toks = tokens(mr["title"]) | tokens((mr.get("description") or "")[:3000])
         if mr.get("merge_commit_sha"):
             toks |= changed_dirs(repo, mr["merge_commit_sha"])
@@ -90,6 +111,12 @@ def load_documents(mirror, discourse, repo):
         first = strip_html(t["posts"][0]["cooked"]) if t["posts"] else ""
         docs.append({"source": "discourse", "id": t["topic"]["id"], "title": t["topic"]["title"],
                      "q": quarter(t["topic"]["created_at"]), "tokens": tokens(t["topic"]["title"]) | tokens(first[:3000])})
+    people -= {"vtk", "paraview", "kitware", "robot", "bot"}
+    removed = Counter(t for d in docs for t in d["tokens"] if t.lower() in people)
+    print(f"removed {len(removed)} person-name tokens; most frequent: "
+          + ", ".join(f"{t} ({n})" for t, n in removed.most_common(60)))
+    for d in docs:
+        d["tokens"] = {t for t in d["tokens"] if t.lower() not in people}
     return docs
 
 
@@ -179,8 +206,11 @@ def main():
         results, n = analyze(docs, quarters, args.last_quarter)
         print(f"\n{name}: {len(docs)} documents, {quarters[0]} to {args.last_quarter}, "
               f"{len(results)} tokens in at least {MIN_DOCS} documents")
-        ranked = {kind: sorted((r for r in results if r["kind"] == kind), key=lambda r: -r["score"])[:args.top]
-                  for kind in ("emerging", "past", "fading")}
+        ranked = {}
+        for common, suffix, top in ((False, "", args.top), (True, " (common English words)", 15)):
+            for kind in ("emerging", "past", "fading"):
+                ranked[kind + suffix] = sorted((r for r in results if r["kind"] == kind and is_common(r["token"]) == common),
+                                               key=lambda r: -r["score"])[:top]
         for rs in ranked.values():
             for r in rs:
                 r["examples"] = examples(docs, r["token"])
