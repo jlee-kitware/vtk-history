@@ -1,0 +1,22 @@
+[
+ {"rule": "Deprecate instead of removing public types and methods to avoid forcing changes upon upgrading.",
+  "evidence": "This is a breaking change, only deprecate for now :)", "expected": "supports"},
+ {"rule": "Deprecate instead of removing public types and methods to avoid forcing changes upon upgrading.",
+  "evidence": "Many non-retrocompatible changes in this MR. Was it voluntary to not deprecate methods and enums that have been removed ?", "expected": "supports"},
+ {"rule": "Initialize member variables directly in the header file.",
+  "evidence": "this has not been initialized. Please move all initialization from the constructor to the header.", "expected": "supports"},
+ {"rule": "Initialize member variables directly in the header file.",
+  "evidence": "I don't see many (or maybe any?) cases where we initialize member variables using _SafeDownCast_ in the header, so my feeling is initialization should remain in the source", "expected": "contradicts"},
+ {"rule": "Use PascalCase for method names in VTK.",
+  "evidence": "VTK style requires the use of CamelCase instead of underscores. It also requires that all method names be capitalized.", "expected": "supports"},
+ {"rule": "Use PascalCase for method names in VTK.",
+  "evidence": "Please use `VTK` somewhere in the define name here so we definitely don't conflict with anything else out there.", "expected": "unrelated"},
+ {"rule": "Avoid using GetVoidPointer and prefer vtk::DataArrayValueRange or array dispatch for array access.",
+  "evidence": "Avoid using the `GetVoidPointer` prefer using the ranges provided by `vtk::DataArrayValueRange` for example for easy iterators.", "expected": "supports"},
+ {"rule": "Place file-local variables, functions, and structs in an anonymous namespace.",
+  "evidence": "Could we please avoid anonymous namespace here? IMHO, these functions can be in a named vtkanari-specific namespace.", "expected": "contradicts"},
+ {"rule": "Commit messages need a short title line, an empty line, and then the description.",
+  "evidence": "VTK enforces that commit messages must be one < 80 char line, optionally followed by an empty line and then free format expanded desriptions.", "expected": "supports"},
+ {"rule": "Use vtkIdType instead of int for loop indices and sizes of cells, points, and arrays.",
+  "evidence": "Please add a test for this filter.", "expected": "unrelated"}
+]

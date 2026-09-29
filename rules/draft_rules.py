@@ -16,6 +16,7 @@ Usage:
 
 import argparse
 import json
+import re
 import sys
 import time
 import urllib.request
@@ -113,9 +114,20 @@ def state_rule(model, group):
     return None
 
 
-def summarize(group, stated):
+SUGGESTION = re.compile(r"^\s*`{0,3}\s*suggestion:[-+0-9]*\s*", re.I)
+
+
+def clean_evidence(text):
+    return SUGGESTION.sub("", text).strip()
+
+
+def explanatory(r):
+    return not SUGGESTION.match(r["evidence"]) and len(r["evidence"].split()) >= 4
+
+
+def summarize(group, stated, counter=()):
     mrs = sorted({r["mr"] for r in group})
-    examples = sorted(group, key=lambda r: r["date"], reverse=True)
+    examples = sorted(group, key=lambda r: (explanatory(r), r["date"]), reverse=True)
     seen, picked = set(), []
     for r in examples:
         if r["mr"] not in seen:
@@ -137,8 +149,17 @@ def summarize(group, stated):
         "modules": Counter(r["module"] for r in group if r["module"]).most_common(3),
         "examples": [{"mr": r["mr"], "url": r["url"], "reviewer": r["reviewer"], "date": r["date"],
                       "evidence": r["evidence"]} for r in picked],
+        "counter_examples": [{"mr": r["mr"], "url": r["url"], "reviewer": r["reviewer"], "date": r["date"],
+                              "evidence": r["evidence"]} for r in counter],
         "members": [r["discussion_id"] for r in group],
     }
+
+
+def evidence_line(e):
+    raw = " ".join(e["evidence"].split())
+    text = clean_evidence(raw)[:200]
+    shown = f"suggested `{text}`" if SUGGESTION.match(raw) else f"\"{text}\""
+    return f"- [!{e['mr']}]({e['url']}) {e['reviewer']}, {e['date']}: {shown}"
 
 
 def write_markdown(rules, path, cutoff, threshold):
@@ -153,7 +174,9 @@ def write_markdown(rules, path, cutoff, threshold):
         f"reviewers stated in their own words across several merge requests (cosine distance {threshold}). "
         "Nothing here is approved: a maintainer should accept, edit, merge, or reject each rule.",
         "",
-        "Support counts merge requests and threads. A rule marked *mixed evidence* groups comments that may not all say the same thing.",
+        "Every supporting comment was checked individually against the stated rule; comments about something else were "
+        "removed from the support counts, and comments that disagree are listed as counter-evidence. "
+        "A rule marked *mixed evidence* has at least one counter-example.",
         "",
     ]
     for topic in sorted(by_topic, key=lambda t: -sum(r["support_mrs"] for r in by_topic[t])):
@@ -171,8 +194,10 @@ def write_markdown(rules, path, cutoff, threshold):
                 f"- Reviewers: {reviewers}",
             ]
             for e in r["examples"]:
-                quote = " ".join(e["evidence"].split())[:200]
-                lines.append(f"- [!{e['mr']}]({e['url']}) {e['reviewer']}, {e['date']}: \"{quote}\"")
+                lines.append(evidence_line(e))
+            if r.get("counter_examples"):
+                lines.append("- Counter-evidence:")
+                lines += ["  " + evidence_line(e) for e in r["counter_examples"][:3]]
             lines.append("")
     Path(path).write_text("\n".join(lines))
 
