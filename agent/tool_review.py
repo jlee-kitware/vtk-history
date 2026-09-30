@@ -30,6 +30,7 @@ import urllib.request
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import static_checks  # noqa: E402
 from review import HOST, Reviewer, hunks  # noqa: E402
 
 MAX_STEPS = 40
@@ -51,6 +52,10 @@ REPEAT = ("(You already ran this exact call; its result is above. Do not repeat 
           "have verified, use a different tool or arguments, or call finish.)")
 WRAP_UP = ("You have {left} steps left. Post each problem you have verified with add_comment now, then call finish. "
            "Do not read more code unless one check decides whether a comment is right.")
+
+CHECKS_NOTE = ("These are text-search results, so confirm each with grep or read_file before commenting: a method can "
+               "be defined by a macro, and a resource can be released through a helper. Each one you confirm is a "
+               "problem VTK reviewers raise, so post it.")
 
 TOO_EARLY = ("(Not yet: you have not investigated the change. Before finishing, check at least a few things: grep "
              "for the new functions, members, or options to see if they are used, implemented, and set; read the "
@@ -172,7 +177,7 @@ class ToolReviewer(Reviewer):
             self.comments.append({"path": path, "line": line, "comment": args.get("comment", ""),
                                   "severity": args.get("severity"), "basis": args.get("basis")})
             return f"recorded at {path}:{line}"
-        return f"(unknown tool {name})"
+        return f"(There is no tool named {name}. The tools are: {', '.join(t['function']['name'] for t in TOOLS)}.)"
 
     def report(self, messages):
         """Ask for the verified findings as structured comments, with no further tool use."""
@@ -203,8 +208,11 @@ class ToolReviewer(Reviewer):
         listing = "\n".join(f"- {p} (+{len(self.added[p])} lines)" for p in self.diffs)
         full = "\n\n".join(f"=== {p}\n{d}" for p, d in self.diffs.items())
         body = full if len(full) <= FULL_DIFF_CHARS else "(The diff is large; use read_diff for the files you want.)"
+        self.findings = static_checks.check(self.repo, head, todo)
         messages = [{"role": "system", "content": SYSTEM},
-                    {"role": "user", "content": f"Merge request: {title}\n\nChanged files:\n{listing}\n\n{body}"}]
+                    {"role": "user", "content": f"Merge request: {title}\n\nChanged files:\n{listing}\n\n"
+                                                f"Automatic checks of the head commit found:\n"
+                                                f"{static_checks.render(self.findings)}\n{CHECKS_NOTE}\n\n{body}"}]
         nudges, seen, repeats, warned = 0, set(), 0, False
         for step in range(MAX_STEPS):
             if not warned and (repeats >= 2 or step >= MAX_STEPS - 8):
