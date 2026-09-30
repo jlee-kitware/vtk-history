@@ -6,7 +6,7 @@ cd "$(dirname "$0")"
 set -e
 step() { echo "== $1 $(date '+%F %T')"; }
 
-while pgrep -f "python3 -u agent/evaluate.py" > /dev/null || pgrep -f "[g]itlab_mirror.py sync" > /dev/null \
+while pgrep -f "[r]un_bench.sh" > /dev/null || pgrep -f "python3 -u agent/evaluate.py" > /dev/null || pgrep -f "[g]itlab_mirror.py sync" > /dev/null \
       || pgrep -f "[d]iscourse_mirror.py sync" > /dev/null; do
     sleep 120
 done
