@@ -5,7 +5,8 @@ Views:
   Review        an MR revision's diff with the agent's comments and the reviewers' comments on the lines
                 they concern; rate each agent comment valid, wrong, or unsure (saved to ratings/ratings.jsonl);
                 run the agent on any revision
-  Rules         draft review rules with evidence, counter-evidence, and deprecation flags;
+  Rules         review rules ranked by confidence (reviewers, follow-through, objections, consistency,
+                deprecated APIs), with the comments behind each;
                 accept, edit, or reject each (saved to rules/curated.json)
   Deprecations  every API VTK has deprecated, with reason and the MRs that deprecated and removed it
   Trends        emerging, past, and fading terms, code areas, and themes, with per-quarter charts
@@ -65,6 +66,9 @@ THEME = {
             "backgroundColor": ACCENT_TINT}}}},
     },
 }
+LEVEL_FG = "({high: '#1A7F37', medium: '#8A5A00', low: '#B42339'})"
+LEVEL_BG = "({high: '#E6F4EA', medium: '#FFF3D6', low: '#FCE8EC'})"
+TONE = "({good: '#1A7F37', bad: '#B42339', neutral: '" + MUTED + "'})"
 DECISION_COLOR = {"accepted": "success", "edited": "primary", "rejected": "error", "undecided": "default"}
 TABS = [("review", "Review"), ("rules", "Rules"), ("deprecations", "Deprecations"), ("trends", "Trends"),
         ("search", "Search")]
@@ -77,10 +81,11 @@ def options(values):
 
 state.update({
     "tab": "review",
-    "rule_rows": [], "rule_search": "", "rule_topic": "", "rule_decision": "", "rule_flag": "",
+    "rule_rows": [], "rule_search": "", "rule_topic": "", "rule_decision": "", "rule_level": "",
     "topics": options(sorted({r["topic"] for r in store.rules})),
     "decisions": options(["undecided", *DECISIONS]),
-    "flags": options(["deprecated API", "mixed evidence"]),
+    "levels": [{"title": "High", "value": "high"}, {"title": "Medium", "value": "medium"},
+               {"title": "Low", "value": "low"}],
     "rule_key": None, "rule": None, "rule_text": "", "rule_note": "", "rule_counts": "", "rule_shown": "",
     "dep_rows": [], "dep_search": "", "dep_outcome": "", "dep_shown": "",
     "outcomes": options(["present", "removed", "undeprecated"]),
@@ -153,16 +158,16 @@ def table(height):
 
 def refresh_rules():
     rows = store.rule_rows()
+    levels = {lv: sum(r["level"] == lv for r in rows) for lv in ("high", "medium", "low")}
     counts = {d: sum(r["decision"] == d for r in rows) for d in ["undecided", *DECISIONS]}
-    state.rule_counts = ", ".join(f"{n} {d}" for d, n in counts.items())
+    state.rule_counts = (", ".join(f"{n} {lv}" for lv, n in levels.items()) + " confidence; "
+                         + ", ".join(f"{n} {d}" for d, n in counts.items()))
     if state.rule_topic:
         rows = [r for r in rows if r["topic"] == state.rule_topic]
     if state.rule_decision:
         rows = [r for r in rows if r["decision"] == state.rule_decision]
-    if state.rule_flag == "deprecated API":
-        rows = [r for r in rows if r["deprecated"]]
-    elif state.rule_flag == "mixed evidence":
-        rows = [r for r in rows if r["mixed"]]
+    if state.rule_level:
+        rows = [r for r in rows if r["level"] == state.rule_level]
     needle = (state.rule_search or "").lower().strip()
     if needle:
         rows = [r for r in rows if needle in f"{r['id']} {r['rule']} {r['topic']}".lower()]
@@ -170,7 +175,7 @@ def refresh_rules():
     state.rule_rows = [dict(r, color=DECISION_COLOR.get(r["decision"], "default")) for r in rows]
 
 
-@state.change("rule_topic", "rule_decision", "rule_flag", "rule_search")
+@state.change("rule_topic", "rule_decision", "rule_level", "rule_search")
 def on_rule_filters(**_):
     refresh_rules()
 
@@ -197,31 +202,52 @@ def rules_view():
                 field("Filter rules", "rule_search")
                 select("Topic", "rule_topic", "topics", 200)
                 select("Decision", "rule_decision", "decisions", 150)
-                select("Flag", "rule_flag", "flags", 170)
+                select("Confidence", "rule_level", "levels", 150)
             caption([B("rule_counts + ' (' + rule_shown + ')'")], marginBottom="4px")
             with table(250), mui.Table(size="small", sticky_header=True):
-                head(("Id", 60), ("Rule", None), ("Topic", 140), ("MRs", 50), ("Last seen", 100),
-                     ("Flags", 110), ("Decision", 110))
+                head(("Id", 60), ("Confidence", 100), ("Rule", None), ("Topic", 130), ("MRs", 50),
+                     ("Last seen", 96), ("Decision", 100))
                 with mui.TableBody():
                     with react.For(items="rule_rows", name="r"):
                         with mui.TableRow(key=B("r.key"), hover=True, selected=B("r.key === rule_key"),
                                           on_click=C("rule_key = r.key"), style={"cursor": "pointer"}):
                             mui.TableCell([B("r.id")], style={"color": ACCENT, "fontWeight": 500})
-                            mui.TableCell([B("r.rule")])
+                            with mui.TableCell():
+                                level_pill("r.level")
+                            with mui.TableCell():
+                                html.Div([B("r.rule")])
+                                html.Div([B("r.reason")], style={"color": MUTED, "fontSize": "0.76rem",
+                                                                 "marginTop": "2px"})
                             mui.TableCell([B("r.topic")])
                             mui.TableCell([B("r.mrs")])
                             mui.TableCell([B("r.last")])
-                            with mui.TableCell():
-                                with react.If(value="r.deprecated"):
-                                    mui.Chip(label="deprecated API", size="small", color="warning",
-                                             style={"marginRight": "4px"})
-                                with react.If(value="r.mixed"):
-                                    mui.Chip(label="mixed", size="small", color="secondary")
                             with mui.TableCell():
                                 mui.Chip(label=B("r.decision"), size="small", color=B("r.color"),
                                          variant="outlined")
         with mui.Box(style={"flex": "5", "minWidth": 0}):
             rule_detail()
+
+
+def level_pill(expr):
+    html.Span([B(f"{expr}.charAt(0).toUpperCase() + {expr}.slice(1)")], style={
+        "display": "inline-block", "padding": "1px 8px", "borderRadius": "10px", "fontSize": "0.76rem",
+        "fontWeight": 600, "whiteSpace": "nowrap", "color": B(f"{LEVEL_FG}[{expr}]"),
+        "background": B(f"{LEVEL_BG}[{expr}]")})
+
+
+def confidence_panel():
+    with html.Div(style={"margin": "12px 0", "padding": "10px 12px", "borderRadius": "8px",
+                         "border": f"1px solid {LINE}", "background": "#FAFBFC"}):
+        with html.Div(style={"display": "flex", "alignItems": "center", "gap": "8px", "marginBottom": "6px"}):
+            html.Span("Confidence", style={"fontWeight": 600})
+            level_pill("rule.level")
+        with react.For(items="rule.confidence", name="f"):
+            with html.Div(key=B("f.name"), style={"display": "flex", "gap": "10px", "padding": "3px 0",
+                                                  "borderTop": f"1px solid {LINE}"}):
+                html.Span([B("f.name")], style={"width": "110px", "flex": "none", "color": MUTED})
+                html.Span([B("f.detail")], style={"flex": "1"})
+                html.Span([B("f.points")], style={"width": "28px", "textAlign": "right", "fontWeight": 600,
+                                                  "color": B(f"{TONE}[f.tone]")})
 
 
 def evidence_list(field_name, title, color="inherit"):
@@ -246,6 +272,7 @@ def rule_detail():
                 mui.Chip(label=B("rule.decision"), size="small", color=B("rule.color"), variant="outlined")
                 mui.Box(style={"flex": "1"})
                 caption([B("rule.decided_by ? rule.decided_by + ', ' + rule.decided_at : ''")])
+            confidence_panel()
             field("Rule (edit before accepting to record an edited rule)", "rule_text", multiline=True,
                   min_rows=2, full_width=True)
             with react.If(value="rule_text !== rule.draft"):
@@ -277,8 +304,8 @@ def rule_detail():
                             html.Span(")")
                             with react.If(value="d.reason"):
                                 html.Span([": ", B("d.reason")])
-            evidence_list("examples", "Supporting comments")
-            evidence_list("counter", "Counter-evidence", "#8250df")
+            evidence_list("examples", "Reviewers asking for this")
+            evidence_list("counter", "Reviewers disagreeing", "#B42339")
     with react.If(value="!rule"):
         with mui.Paper(variant="outlined", style={"padding": "24px", "color": MUTED}):
             html.Div("Select a rule to see its evidence and record a decision.")

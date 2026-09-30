@@ -42,6 +42,9 @@ class Store:
             r.setdefault("id", f"R{i:03d}")
             r["key"] = rule_key(r)
             r["conflicts"] = conflicts(r, self.by_symbol, repo)
+        confidence = self._json("data/rules_confidence.json") or {"rules": {}}
+        self.confidence = confidence["rules"]
+        self.baseline_follow = confidence.get("baseline_follow")
         self.terms = self._json("data/trends/terms-v2/terms.json")
         self.themes = self._json("data/trends/k250/themes.json")
         self._index = None
@@ -61,11 +64,14 @@ class Store:
         rows = []
         for r in self.rules:
             c = self.curated.get(r["key"], {})
+            conf = self.confidence.get(r["key"], {})
             rows.append({"id": r["id"], "key": r["key"], "rule": c.get("rule") or r["rule"] or "", "topic": r["topic"],
                          "mrs": r["support_mrs"], "reviewers": len(r["reviewers"]), "last": r["last_seen"],
                          "decision": c.get("decision", "undecided"), "mixed": bool(r.get("counter_examples")),
-                         "deprecated": bool(r["conflicts"])})
-        return rows
+                         "deprecated": bool(r["conflicts"]), "level": conf.get("level", "medium"),
+                         "score": conf.get("score", 0), "reason": conf.get("reason", "")})
+        rank = {"high": 0, "medium": 1, "low": 2}
+        return sorted(rows, key=lambda x: (rank[x["level"]], -x["score"], -x["mrs"]))
 
     def rule_detail(self, key):
         r = next((x for x in self.rules if x["key"] == key), None)
@@ -74,7 +80,10 @@ class Store:
         c = self.curated.get(key, {})
         evidence = lambda es: [{"mr": e["mr"], "url": e.get("url") or mr_url(e["mr"]), "reviewer": e["reviewer"],
                                 "date": e["date"], "text": " ".join(e["evidence"].split())[:600]} for e in es]
+        conf = self.confidence.get(key, {})
         return {
+            "confidence": self.factors(conf),
+            "level": conf.get("level", "medium"), "reason": conf.get("reason", ""),
             "id": r["id"], "key": key, "draft": r["rule"] or "", "rule": c.get("rule") or r["rule"] or "",
             "rationale": r.get("rationale") or "", "scope": r.get("scope") or "", "topic": r["topic"],
             "support": f"{r['support_mrs']} MRs, {r['support_threads']} threads, {r['first_seen']} to {r['last_seen']}",
@@ -84,6 +93,27 @@ class Store:
             "decision": c.get("decision", "undecided"), "note": c.get("note", ""),
             "decided_by": c.get("by", ""), "decided_at": c.get("at", ""),
         }
+
+    def factors(self, conf):
+        if not conf:
+            return []
+        p = conf["points"]
+        follow = (f"{conf['follow']:.0%} of {conf['line_comments']} line comments led to a code change "
+                  f"(all line comments: {self.baseline_follow:.0%})") if conf["follow"] is not None \
+            else "Not measurable: the supporting comments are general, with no line to check"
+        rows = [
+            ("Reviewers", f"{conf['reviewers']} different reviewers asked for this", p["breadth"]),
+            ("Follow-through", follow, p["follow"]),
+            ("Objections", f"{conf['objections']} ({conf['objection_share']:.0%} of the discussion)"
+             + (", including one newer than the latest support" if conf["newer_objection"] else ""),
+             p["objections"] + p["newer_objection"]),
+            ("Consistency", "Supporting comments agree" if conf["consistent"]
+             else "Verification found some supporting comments that differ", p["consistency"]),
+        ]
+        if conf["deprecated_api"]:
+            rows.append(("Deprecated APIs", "Names an API VTK has deprecated or removed, so the level is low", None))
+        return [{"name": n, "detail": d, "points": "" if v is None else f"{v:+d}",
+                 "tone": "neutral" if not v else "good" if v > 0 else "bad"} for n, d, v in rows]
 
     def decide(self, key, decision, rule_text, note, who=None):
         r = next(x for x in self.rules if x["key"] == key)
