@@ -1,0 +1,20 @@
+[
+ {"mined": "Use nullptr instead of NULL or 0 for null pointers.",
+  "doc": "Use nullptr instead of 0 or NULL for null pointer constants.", "quote": ".clang-tidy enables it (modernize-use-nullptr)", "verdict": "same"},
+ {"mined": "Place opening braces on the same line as the control statement.",
+  "doc": "Put opening braces on their own line, below the statement (Allman style).", "quote": ".clang-format: BreakBeforeBraces: Allman", "verdict": "contradicts"},
+ {"mined": "Use the override keyword instead of the virtual keyword for overriding virtual functions.",
+  "doc": "Mark overriding virtual functions with override and drop the redundant virtual.", "quote": ".clang-tidy enables it (modernize-use-override)", "verdict": "same"},
+ {"mined": "Use const reference for function parameters to avoid copying.",
+  "doc": "Pass expensive-to-copy parameters that are only read by const reference instead of by value.", "quote": ".clang-tidy enables it (performance-unnecessary-value-param)", "verdict": "same"},
+ {"mined": "Initialize member variables in the constructor initializer list.",
+  "doc": "Keep lines to 100 columns or fewer.", "quote": ".clang-format: ColumnLimit: 100", "verdict": "unrelated"},
+ {"mined": "Squash all commits into logical or a single commit before merging.",
+  "doc": "Put a space after the template keyword.", "quote": ".clang-format: SpaceAfterTemplateKeyword: true", "verdict": "unrelated"},
+ {"mined": "Add a release note in Documentation/release/dev for new features.",
+  "doc": "Add a release note (changelog entry) under Documentation/release/dev for user-visible changes.", "quote": "the GitLab robot flagged this on 26061 MR comments", "verdict": "same"},
+ {"mined": "Use snprintf for safe string formatting instead of sprintf.",
+  "doc": "Use vtk::format_to_n instead of snprintf, snprintf_s, vsnprintf, vsnprintf_s; they are unsafe and slow.", "quote": ".clang-tidy CheckOptions: bugprone-unsafe-functions", "verdict": "contradicts"},
+ {"mined": "Use = default for special member functions in the class definition.",
+  "doc": "Use = default instead of an empty body for special member functions.", "quote": ".clang-tidy enables it (modernize-use-equals-default)", "verdict": "same"}
+]

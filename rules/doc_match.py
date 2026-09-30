@@ -7,7 +7,7 @@ For every mined rule, the --candidates nearest documented rules by embedding are
   contradicts  following one breaks the other
   related      same subject, different requirement
   unrelated
-The judge is checked on rules/doc_match_gold.json before the run (one miss allowed).
+The judge is checked on rules/<source>_match_gold.json before the run (one miss allowed).
 
 Writes data/doc_match.json (or data/tool_match.json): for each mined rule key, the rule it restates or
 contradicts (for tools, the enabled check that enforces it and any disabled clang-tidy check that could),
@@ -19,6 +19,7 @@ Usage:
 """
 
 import argparse
+import hashlib
 import json
 import sys
 import urllib.request
@@ -34,16 +35,17 @@ from data import rule_key  # noqa: E402
 from doc_rules import HOST, ask  # noqa: E402
 
 VERDICTS = ["same", "contradicts", "related", "unrelated"]
-SOURCES = {"doc": ("the VTK developer guide", "Guide text"),
-           "tool": ("a check VTK's tools run (clang-tidy, clang-format, or the GitLab commit checks)", "Configured by")}
+SOURCES = {"doc": ("a rule from the VTK developer guide", "Developer guide", "Guide text", "the guide states this rule"),
+           "tool": ("a check that VTK's tools run automatically", "Tool check", "Configured by",
+                    "the tool check enforces this rule")}
 PROMPT = """Compare a rule mined from VTK code review comments with {what}.
 
 Mined rule: {mined}
-Other rule: {doc}
+{rule_label}: {doc}
 {quote_label}: "{quote}"
 
 Reply with JSON only: {{"verdict": "...", "why": "..."}}
-  verdict  "same" if the other rule states or enforces this rule, even if one is broader or narrower;
+  verdict  "same" if {same_when}, even if one is broader or narrower than the other;
            "contradicts" if following one would break the other;
            "related" if they concern the same subject but require different things;
            "unrelated" otherwise
@@ -59,15 +61,16 @@ def embed(texts, model="qwen3-embedding:latest"):
 
 
 def judge(model, mined, doc, quote, source="doc"):
-    what, label = SOURCES[source]
-    reply = ask(model, PROMPT.format(what=what, quote_label=label, mined=mined, doc=doc, quote=quote))
+    what, rule_label, quote_label, same_when = SOURCES[source]
+    reply = ask(model, PROMPT.format(what=what, rule_label=rule_label, quote_label=quote_label, same_when=same_when,
+                                     mined=mined, doc=doc, quote=quote))
     verdict = reply.get("verdict") if reply.get("verdict") in VERDICTS else "unrelated"
     return verdict, reply.get("why", "")
 
 
-def check_gold(model):
-    gold = json.loads((ROOT / "rules/doc_match_gold.json").read_text())
-    misses = [g for g in gold if judge(model, g["mined"], g["doc"], g["doc"])[0] != g["verdict"]]
+def check_gold(model, source):
+    gold = json.loads((ROOT / f"rules/{source}_match_gold.json").read_text())
+    misses = [g for g in gold if judge(model, g["mined"], g["doc"], g.get("quote", g["doc"]), source)[0] != g["verdict"]]
     for g in misses:
         print(f"gold miss: expected {g['verdict']}: {g['mined'][:60]} / {g['doc'][:60]}")
     if len(misses) > 1:
@@ -80,8 +83,15 @@ def main():
     ap.add_argument("--model", default="qwen3-coder-next:q4_K_M")
     ap.add_argument("--candidates", type=int, default=4)
     ap.add_argument("--source", choices=list(SOURCES), default="doc")
+    ap.add_argument("--force", action="store_true", help="match even if neither rule set changed")
     args = ap.parse_args()
-    check_gold(args.model)
+    out_path = ROOT / f"data/{args.source}_match.json"
+    inputs = hashlib.sha1((ROOT / "data/rules_verified.json").read_bytes()
+                          + (ROOT / f"data/{args.source}_rules.json").read_bytes()).hexdigest()
+    if not args.force and out_path.exists() and json.loads(out_path.read_text()).get("inputs") == inputs:
+        print(f"rules unchanged since the last match; keeping {out_path}")
+        return
+    check_gold(args.model, args.source)
     mined = json.loads((ROOT / "data/rules_verified.json").read_text())["rules"]
     docs = json.loads((ROOT / f"data/{args.source}_rules.json").read_text())["rules"]
     for d in docs:
@@ -114,9 +124,9 @@ def main():
             matches[key] = {"verdict": verdict, "why": why, "doc": docs[j]["id"], "similarity": round(float(sims[i, j]), 3)}
         if verdict == "same":
             restated.add(docs[j]["id"])
-    out = {"matches": matches, "automatable": automatable,
+    out = {"inputs": inputs, "matches": matches, "automatable": automatable,
            "doc_only": [d["id"] for d in docs if d["id"] not in restated and d["enabled"]]}
-    (ROOT / f"data/{args.source}_match.json").write_text(json.dumps(out, indent=1))
+    out_path.write_text(json.dumps(out, indent=1))
     same = sum(m["verdict"] == "same" for m in matches.values())
     print(f"{same} mined rules restate a {args.source} rule, {len(matches) - same} contradict one; "
           f"{len(automatable)} match a clang-tidy check that is off; "

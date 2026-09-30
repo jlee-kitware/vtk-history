@@ -112,11 +112,18 @@ def main():
     ap.add_argument("--ref", default="upstream/master")
     ap.add_argument("--model", default="qwen3-coder-next:q4_K_M")
     ap.add_argument("--out", default=str(ROOT / "data/doc_rules.json"))
+    ap.add_argument("--force", action="store_true", help="extract even if no document changed")
     args = ap.parse_args()
     commit = subprocess.check_output(["git", "-C", args.repo, "rev-parse", "--short", args.ref], text=True).strip()
     listed = subprocess.check_output(["git", "-C", args.repo, "ls-tree", "-r", "--name-only", args.ref,
                                       *[f"{DOCS}/{d}" for d in DIRS]], text=True).split()
     files = GUIDE_FILES + [p[len(DOCS) + 1:] for p in listed if p.endswith(".md")]
+    sources = {f: subprocess.check_output(["git", "-C", args.repo, "rev-parse", f"{args.ref}:{DOCS}/{f}"], text=True).strip()
+               for f in files}
+    out_path = Path(args.out)
+    if not args.force and out_path.exists() and json.loads(out_path.read_text()).get("sources") == sources:
+        print(f"documents unchanged since the last extraction; keeping {out_path}")
+        return
     jobs = []
     for file in files:
         text = subprocess.check_output(["git", "-C", args.repo, "show", f"{args.ref}:{DOCS}/{file}"], text=True)
@@ -133,7 +140,7 @@ def main():
                 rules.append(r)
     for i, r in enumerate(rules, 1):
         r["id"] = f"D{i:03d}"
-    Path(args.out).write_text(json.dumps({"commit": commit, "rules": rules}, indent=1, ensure_ascii=False))
+    out_path.write_text(json.dumps({"commit": commit, "sources": sources, "rules": rules}, indent=1, ensure_ascii=False))
     by_dir = {}
     for r in rules:
         top = r["file"].split("/")[0]

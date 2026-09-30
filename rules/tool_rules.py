@@ -151,14 +151,23 @@ def main():
     ap.add_argument("--repo", default="/home/jlee/gitsync/vtk")
     ap.add_argument("--ref", default="upstream/master")
     ap.add_argument("--model", default="qwen3-coder-next:q4_K_M")
+    ap.add_argument("--force", action="store_true", help="rebuild even if no tool configuration changed")
     args = ap.parse_args()
+    configs = [".clang-tidy", ".clang-format", ".codespellrc", ".editorconfig"]
+    sources = {c: subprocess.run(["git", "-C", args.repo, "rev-parse", f"{args.ref}:{c}"], capture_output=True,
+                                 text=True).stdout.strip() for c in configs}
+    sources["clang-tidy"] = subprocess.run([CLANG_TIDY, "--version"], capture_output=True, text=True).stdout.strip()
+    out_path = ROOT / "data/tool_rules.json"
+    if not args.force and out_path.exists() and json.loads(out_path.read_text()).get("sources") == sources:
+        print("tool configuration unchanged; keeping data/tool_rules.json")
+        return
     rules = format_rules(args.repo, args.ref) + ghostflow_rules()
     rules += [{"tool": t, "check": t, "enabled": True, "rule": r, "evidence": f"{src} in the VTK repository",
                "url": BLOB + src} for t, src, r in OTHER]
     rules += tidy_rules(args.repo, args.ref, args.model)
     for i, r in enumerate(rules, 1):
         r["id"] = f"T{i:03d}"
-    (ROOT / "data/tool_rules.json").write_text(json.dumps({"rules": rules}, indent=1))
+    out_path.write_text(json.dumps({"sources": sources, "rules": rules}, indent=1))
     by_tool = Counter((r["tool"], r["enabled"]) for r in rules)
     print(f"{len(rules)} tool rules: " + ", ".join(f"{t} {'on' if e else 'off'}: {n}" for (t, e), n in sorted(by_tool.items())))
 
