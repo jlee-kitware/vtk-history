@@ -33,6 +33,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from review import HOST, Reviewer, hunks  # noqa: E402
 
 MAX_STEPS = 40
+MIN_INVESTIGATION = 3
 FULL_DIFF_CHARS = 40000
 MAX_TOOL_CHARS = 6000
 
@@ -50,6 +51,10 @@ REPEAT = ("(You already ran this exact call; its result is above. Do not repeat 
           "have verified, use a different tool or arguments, or call finish.)")
 WRAP_UP = ("You have {left} steps left. Post each problem you have verified with add_comment now, then call finish. "
            "Do not read more code unless one check decides whether a comment is right.")
+
+TOO_EARLY = ("(Not yet: you have not investigated the change. Before finishing, check at least a few things: grep "
+             "for the new functions, members, or options to see if they are used, implemented, and set; read the "
+             "surrounding code; or search_history for how reviewers treated similar changes.)")
 
 REPORT = """The investigation is over. Write your review now, using only what you found above.
 List each concrete problem you verified in the code: a bug, a leak, dead or unimplemented code, something never set or never called, a build or configuration error, API misuse, or a clear break from a VTK rule. Include problems you already posted. Put each comment on the added line it concerns and write it the way a VTK maintainer would: short, direct, naming what to change.
@@ -224,7 +229,10 @@ class ToolReviewer(Reviewer):
                     except json.JSONDecodeError:
                         args = {}
                 key = json.dumps([name, args], sort_keys=True)
-                if name == "finish":
+                investigated = sum(1 for t in self.trace if t["tool"] not in ("finish", "add_comment"))
+                if name == "finish" and investigated < MIN_INVESTIGATION:
+                    result = TOO_EARLY
+                elif name == "finish":
                     done = True
                     result = "review finished"
                 elif key in seen and name != "add_comment":
