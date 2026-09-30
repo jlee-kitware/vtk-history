@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""VTK review history explorer.
+"""VTK review history explorer (trame v4, React client with MUI).
 
 Views:
   Review        an MR revision's diff with the agent's comments and the reviewers' comments on the lines
@@ -9,63 +9,123 @@ Views:
                 accept, edit, or reject each (saved to rules/curated.json)
   Deprecations  every API VTK has deprecated, with reason and the MRs that deprecated and removed it
   Trends        emerging, past, and fading terms, code areas, and themes, with per-quarter charts
-  Search        review threads, MRs, issues, and forum posts (keyword and meaning)
+  Search        review threads, MRs, issues, forum posts, docs, release notes, and class docs
 
 Usage:
-  python app/main.py --port 8080
+  python app/main.py --server --port 8080
 """
 
 import asyncio
 import sys
 from pathlib import Path
+from urllib.parse import quote
 
-import plotly.graph_objects as go
 from trame.app import get_server
-from trame.ui.vuetify3 import SinglePageLayout
-from trame.widgets import html, plotly
-from trame.widgets import vuetify3 as v
+from trame.ui.mui import SinglePageLayout
+from trame.widgets import html, mui, react
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from charts import line_svg  # noqa: E402
 from data import DECISIONS, Store  # noqa: E402
 from review_data import Reviews, comment_key  # noqa: E402
 
-server = get_server(client_type="vue3")
+B, C = react.Bind, react.Callback
+server = get_server(client_type="react")
 state, ctrl = server.state, server.controller
 store = Store()
 reviews = Reviews()
 
-MONO = "font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 0.85em"
-DECISION_COLOR = {"accepted": "green", "edited": "blue", "rejected": "red", "undecided": "grey"}
-RULE_HEADERS = [{"title": "Id", "key": "id", "width": 70}, {"title": "Rule", "key": "rule"},
-                {"title": "Topic", "key": "topic", "width": 150}, {"title": "MRs", "key": "mrs", "width": 70},
-                {"title": "Last seen", "key": "last", "width": 110}, {"title": "Flags", "key": "flags", "width": 110},
-                {"title": "Decision", "key": "decision", "width": 110}]
-DEP_HEADERS = [{"title": "API", "key": "api"}, {"title": "Version", "key": "version", "width": 90},
-               {"title": "Outcome", "key": "outcome", "width": 110},
-               {"title": "Deprecated", "key": "deprecated_mr", "width": 150},
-               {"title": "Removed", "key": "removed_mr", "width": 150}, {"title": "Reason", "key": "reason"}]
-TREND_HEADERS = [{"title": "Term, code area, or theme", "key": "name"}, {"title": "Ratio", "key": "ratio", "width": 80},
-                 {"title": "Docs", "key": "docs", "width": 80}, {"title": "First seen", "key": "first_seen", "width": 100},
-                 {"title": "Peak", "key": "peak", "width": 90}]
-SEARCH_HEADERS = [{"title": "Kind", "key": "kind", "width": 80}, {"title": "Ref", "key": "ref", "width": 110},
-                  {"title": "Date", "key": "date", "width": 110}, {"title": "Author", "key": "author", "width": 140},
-                  {"title": "Title and excerpt", "key": "title"}]
+MONO = "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace"
+MUTED = "rgba(0, 0, 0, 0.6)"
+DECISION_COLOR = {"accepted": "success", "edited": "primary", "rejected": "error", "undecided": "default"}
+TABS = [("review", "Review"), ("rules", "Rules"), ("deprecations", "Deprecations"), ("trends", "Trends"),
+        ("search", "Search")]
+MAX_ROWS = 400
+
+
+def options(values):
+    return [{"title": str(x), "value": x} for x in values]
+
 
 state.update({
     "tab": "review",
-    "rule_rows": [], "rule_search": "", "rule_topic": None, "rule_decision": None, "rule_flag": None,
-    "topics": sorted({r["topic"] for r in store.rules}), "decisions": ["undecided", *DECISIONS],
-    "rule_key": None, "rule": None, "rule_text": "", "rule_note": "", "rule_counts": "",
-    "dep_rows": store.deprecation_rows(), "dep_search": "", "dep_outcome": None,
+    "rule_rows": [], "rule_search": "", "rule_topic": "", "rule_decision": "", "rule_flag": "",
+    "topics": options(sorted({r["topic"] for r in store.rules})),
+    "decisions": options(["undecided", *DECISIONS]),
+    "flags": options(["deprecated API", "mixed evidence"]),
+    "rule_key": None, "rule": None, "rule_text": "", "rule_note": "", "rule_counts": "", "rule_shown": "",
+    "dep_rows": [], "dep_search": "", "dep_outcome": "", "dep_shown": "",
+    "outcomes": options(["present", "removed", "undeprecated"]),
     "trend_what": "terms", "trend_source": "mr", "trend_kind": "emerging", "trend_common": False,
-    "trend_rows": [], "trend_name": None, "trend_row": None,
-    "q": "", "q_kind": None, "q_since": "", "q_until": "", "search_rows": [], "searching": False, "search_error": "",
+    "trend_rows": [], "trend_name": None, "trend_row": None, "trend_chart": "", "trend_title": "",
+    "q": "", "q_kind": "", "q_since": "", "q_until": "", "search_rows": [], "searching": False, "search_error": "",
+    "kinds": options(["thread", "mr", "issue", "post", "doc", "note", "class"]),
 })
+
+
+def text(expr):
+    return B(expr)
+
+
+def link(text_expr, url_expr):
+    return html.A([B(text_expr)], href=B(url_expr), target="_blank",
+                  style={"color": "#0969da", "textDecoration": "none"})
+
+
+def select(label, key, items, width=200, numeric=False, empty=True):
+    """Native select (MUI cannot map a dynamic option list onto its own menu)."""
+    value = f"{key} === null || {key} === undefined ? '' : {key}"
+    assign = f"{key} = $event.target.value === '' ? null : Number($event.target.value)" if numeric \
+        else f"{key} = $event.target.value"
+    with mui.TextField(select=True, label=label, size="small", value=B(value), on_change=C(assign),
+                       style={"minWidth": f"{width}px", "maxWidth": f"{width}px"},
+                       slot_props={"select": {"native": True}, "inputLabel": {"shrink": True}}):
+        if empty:
+            html.Option("", value="")
+        with react.For(items=items, name="o"):
+            html.Option([B("o.title")], value=B("o.value"), key=B("String(o.value)"))
+
+
+def field(label, key, width=None, on_enter=None, **kwargs):
+    style = {"minWidth": f"{width}px", "maxWidth": f"{width}px"} if width else {"flex": "1", "minWidth": "220px"}
+    extra = {"on_key_up": C(on_enter, "[$event.key, $event.target.value]")} if on_enter else {}
+    return mui.TextField(label=label, size="small", value=B(key), on_change=C(f"{key} = $event.target.value"),
+                         style=style, **extra, **kwargs)
+
+
+def caption(children, **style):
+    return html.Div(children, style={"fontSize": "0.8rem", "color": MUTED, **style})
+
+
+def bar(**style):
+    return mui.Box(style={"display": "flex", "flexWrap": "wrap", "gap": "8px", "alignItems": "center",
+                          "marginBottom": "8px", **style})
+
+
+def toggle(key, choices):
+    with mui.ButtonGroup(size="small"):
+        for label, value in choices:
+            mui.Button(label, variant=B(f"{key} === '{value}' ? 'contained' : 'outlined'"),
+                       on_click=C(f"{key} = '{value}'"))
+
+
+def head(*columns):
+    with mui.TableHead(), mui.TableRow():
+        for title, width in columns:
+            mui.TableCell(title, style={"width": f"{width}px"} if width else {}, key=title)
+
+
+def table(height):
+    return mui.TableContainer(style={"maxHeight": f"calc(100vh - {height}px)", "border": "1px solid #d0d7de",
+                                     "borderRadius": "4px"})
+
+
+# ----------------------------------------------------------------------------- Rules
 
 
 def refresh_rules():
     rows = store.rule_rows()
-    counts = {d: sum(r["decision"] == d for r in rows) for d in state.decisions}
+    counts = {d: sum(r["decision"] == d for r in rows) for d in ["undecided", *DECISIONS]}
     state.rule_counts = " · ".join(f"{n} {d}" for d, n in counts.items())
     if state.rule_topic:
         rows = [r for r in rows if r["topic"] == state.rule_topic]
@@ -75,19 +135,24 @@ def refresh_rules():
         rows = [r for r in rows if r["deprecated"]]
     elif state.rule_flag == "mixed evidence":
         rows = [r for r in rows if r["mixed"]]
-    state.rule_rows = rows
+    needle = (state.rule_search or "").lower().strip()
+    if needle:
+        rows = [r for r in rows if needle in f"{r['id']} {r['rule']} {r['topic']}".lower()]
+    state.rule_shown = f"{len(rows)} shown"
+    state.rule_rows = [dict(r, color=DECISION_COLOR.get(r["decision"], "default")) for r in rows]
 
 
-@state.change("rule_topic", "rule_decision", "rule_flag")
+@state.change("rule_topic", "rule_decision", "rule_flag", "rule_search")
 def on_rule_filters(**_):
     refresh_rules()
 
 
 @state.change("rule_key")
 def on_rule_key(rule_key, **_):
-    state.rule = store.rule_detail(rule_key) if rule_key else None
-    state.rule_text = state.rule["rule"] if state.rule else ""
-    state.rule_note = state.rule["note"] if state.rule else ""
+    rule = store.rule_detail(rule_key) if rule_key else None
+    state.rule = dict(rule, color=DECISION_COLOR.get(rule["decision"], "default")) if rule else None
+    state.rule_text = rule["rule"] if rule else ""
+    state.rule_note = rule["note"] if rule else ""
 
 
 def decide(decision):
@@ -97,16 +162,142 @@ def decide(decision):
         refresh_rules()
 
 
-ctrl.accept = lambda: decide("accepted")
-ctrl.reject = lambda: decide("rejected")
-ctrl.clear = lambda: decide("undecided")
+def rules_view():
+    with mui.Box(style={"display": "flex", "gap": "12px"}):
+        with mui.Box(style={"flex": "7", "minWidth": 0}):
+            with bar():
+                field("Filter rules", "rule_search")
+                select("Topic", "rule_topic", "topics", 200)
+                select("Decision", "rule_decision", "decisions", 150)
+                select("Flag", "rule_flag", "flags", 170)
+            caption([B("rule_counts + ' (' + rule_shown + ')'")], marginBottom="4px")
+            with table(250), mui.Table(size="small", sticky_header=True):
+                head(("Id", 60), ("Rule", None), ("Topic", 140), ("MRs", 50), ("Last seen", 100),
+                     ("Flags", 110), ("Decision", 110))
+                with mui.TableBody():
+                    with react.For(items="rule_rows", name="r"):
+                        with mui.TableRow(key=B("r.key"), hover=True, selected=B("r.key === rule_key"),
+                                          on_click=C("rule_key = r.key"), style={"cursor": "pointer"}):
+                            mui.TableCell([B("r.id")], style={"color": "#0969da"})
+                            mui.TableCell([B("r.rule")])
+                            mui.TableCell([B("r.topic")])
+                            mui.TableCell([B("r.mrs")])
+                            mui.TableCell([B("r.last")])
+                            with mui.TableCell():
+                                with react.If(value="r.deprecated"):
+                                    mui.Chip(label="deprecated API", size="small", color="warning",
+                                             style={"marginRight": "4px"})
+                                with react.If(value="r.mixed"):
+                                    mui.Chip(label="mixed", size="small", color="secondary")
+                            with mui.TableCell():
+                                mui.Chip(label=B("r.decision"), size="small", color=B("r.color"),
+                                         variant="outlined")
+        with mui.Box(style={"flex": "5", "minWidth": 0}):
+            rule_detail()
 
 
-@state.change("dep_outcome")
-def on_dep_outcome(dep_outcome, **_):
+def evidence_list(field_name, title, color="inherit"):
+    with react.If(value=f"rule.{field_name}.length"):
+        with html.Div(style={"marginTop": "12px"}):
+            html.Div(title, style={"fontWeight": 600, "color": color})
+            with react.For(items=f"rule.{field_name}", name="e"):
+                with html.Div(key=B("e.mr + e.date + e.text.slice(0, 20)"), style={"margin": "8px 0"}):
+                    link("'!' + e.mr", "e.url")
+                    html.Span([" ", B("e.reviewer"), ", ", B("e.date")], style={"color": MUTED})
+                    html.Div([B("e.text")], style={"paddingLeft": "10px", "borderLeft": "3px solid #d0d7de",
+                                                   "whiteSpace": "pre-wrap"})
+
+
+def rule_detail():
+    box = {"padding": "12px", "height": "calc(100vh - 150px)", "overflowY": "auto", "fontSize": "0.9rem"}
+    with react.If(value="rule"):
+        with mui.Paper(variant="outlined", style=box):
+            with mui.Stack(direction="row", spacing=1, style={"alignItems": "center", "marginBottom": "8px"}):
+                mui.Typography([B("rule.id")], variant="h6")
+                mui.Chip(label=B("rule.topic"), size="small")
+                mui.Chip(label=B("rule.decision"), size="small", color=B("rule.color"), variant="outlined")
+                mui.Box(style={"flex": "1"})
+                caption([B("rule.decided_by ? rule.decided_by + ', ' + rule.decided_at : ''")])
+            field("Rule (edit before accepting to record an edited rule)", "rule_text", multiline=True,
+                  min_rows=2, full_width=True)
+            with react.If(value="rule_text !== rule.draft"):
+                caption(["Draft: ", B("rule.draft")], marginTop="4px")
+            with html.Div(style={"marginTop": "8px", "display": "flex"}):
+                field("Note (why, or what should change)", "rule_note")
+            with mui.Stack(direction="row", spacing=1, style={"marginTop": "8px"}):
+                mui.Button("Accept", color="success", variant="contained", size="small",
+                           on_click=C(decide, "['accepted']"))
+                mui.Button("Reject", color="error", variant="contained", size="small",
+                           on_click=C(decide, "['rejected']"))
+                mui.Button("Clear decision", size="small", on_click=C(decide, "['undecided']"))
+            with react.If(value="rule.rationale"):
+                html.Div(["Rationale: ", B("rule.rationale")], style={"marginTop": "12px"})
+            html.Div(["Scope: ", B("rule.scope")])
+            html.Div(["Support: ", B("rule.support")])
+            html.Div(["Reviewers: ", B("rule.reviewers")])
+            with react.If(value="rule.conflicts.length"):
+                with html.Div(style={"marginTop": "12px"}):
+                    html.Div("Names APIs VTK has since deprecated or removed",
+                             style={"fontWeight": 600, "color": "#bc4c00"})
+                    with react.For(items="rule.conflicts", name="d"):
+                        with html.Div(key=B("d.api + d.version"), style={"margin": "4px 0"}):
+                            html.Span([B("d.api")], style={"fontFamily": MONO})
+                            html.Span([" deprecated in ", B("d.version"), " (", B("d.deprecated_on")])
+                            with react.If(value="d.deprecated_mr"):
+                                html.Span(", ")
+                                link("'!' + d.deprecated_mr", "d.deprecated_url")
+                            html.Span(")")
+                            with react.If(value="d.reason"):
+                                html.Span([": ", B("d.reason")])
+            evidence_list("examples", "Supporting comments")
+            evidence_list("counter", "Counter-evidence", "#8250df")
+    with react.If(value="!rule"):
+        with mui.Paper(variant="outlined", style={"padding": "24px", "color": MUTED}):
+            html.Div("Select a rule to see its evidence and record a decision.")
+
+
+# ----------------------------------------------------------------------------- Deprecations
+
+
+@state.change("dep_outcome", "dep_search")
+def on_dep_filters(dep_outcome, dep_search, **_):
     rows = store.deprecation_rows()
-    state.dep_rows = [r for r in rows if r["outcome"] == dep_outcome] if dep_outcome else rows
+    if dep_outcome:
+        rows = [r for r in rows if r["outcome"] == dep_outcome]
+    needle = (dep_search or "").lower().strip()
+    if needle:
+        rows = [r for r in rows if needle in f"{r['api']} {r['version']} {r.get('reason') or ''}".lower()]
+    state.dep_shown = (f"{len(rows)} deprecated APIs" + (f", first {MAX_ROWS} shown" if len(rows) > MAX_ROWS else "")
+                       + ". 'present' means still deprecated in the current tree.")
+    state.dep_rows = rows[:MAX_ROWS]
 
+
+def deprecations_view():
+    with bar():
+        field("Search APIs, reasons, versions", "dep_search")
+        select("Status", "dep_outcome", "outcomes", 180)
+    caption([B("dep_shown")], marginBottom="4px")
+    with table(220), mui.Table(size="small", sticky_header=True):
+        head(("API", None), ("Version", 80), ("Outcome", 100), ("Deprecated", 160), ("Removed", 160),
+             ("Reason", None))
+        with mui.TableBody():
+            with react.For(items="dep_rows", name="d"):
+                with mui.TableRow(key=B("d.api + d.version"), hover=True):
+                    mui.TableCell([B("d.api")], title=B("d.declaration"), style={"fontFamily": MONO})
+                    mui.TableCell([B("d.version")])
+                    mui.TableCell([B("d.outcome")])
+                    with mui.TableCell():
+                        html.Span([B("d.deprecated_on"), " "], style={"whiteSpace": "nowrap"})
+                        with react.If(value="d.deprecated_mr"):
+                            link("'!' + d.deprecated_mr", "d.deprecated_url")
+                    with mui.TableCell():
+                        html.Span([B("d.removed_on || ''"), " "], style={"whiteSpace": "nowrap"})
+                        with react.If(value="d.removed_mr"):
+                            link("'!' + d.removed_mr", "d.removed_url")
+                    mui.TableCell([B("d.reason")])
+
+
+# ----------------------------------------------------------------------------- Trends
 
 TREND = {"quarters": [], "docs": [], "rows": {}}
 
@@ -117,27 +308,66 @@ def on_trend_filters(trend_what, trend_source, trend_kind, trend_common, **_):
     TREND.update(quarters=quarters, docs=docs, rows={r["name"]: r for r in rows})
     state.trend_rows = [{k: r[k] for k in ("name", "ratio", "docs", "first_seen", "peak")} for r in rows]
     state.trend_name = rows[0]["name"] if rows else None
+    on_trend_name(state.trend_name)
 
 
 @state.change("trend_name")
 def on_trend_name(trend_name, **_):
     row = TREND["rows"].get(trend_name)
     if not row:
-        state.trend_row = None
-        ctrl.trend_chart_update(go.Figure())
+        state.trend_row, state.trend_chart, state.trend_title = None, "", ""
         return
     state.trend_row = {"name": row["name"], "description": row.get("description", ""), "examples": [
         dict(e, url=store.example_url(e["source"], e["id"])) for e in row["examples"]]}
     share = [100 * c / n if n else 0 for c, n in zip(row["series"], TREND["docs"])]
     label = "merge requests" if state.trend_source == "mr" else "forum topics"
-    fig = go.Figure(go.Scatter(x=TREND["quarters"][:len(share)], y=share, mode="lines+markers",
-                               line={"color": "#1f6feb", "width": 2}, marker={"size": 4},
-                               hovertemplate="%{x}: %{y:.1f}%<extra></extra>"))
-    fig.update_layout(margin={"l": 50, "r": 20, "t": 30, "b": 40}, height=280,
-                      title={"text": f"Share of {label} mentioning {row['name']}", "font": {"size": 14}},
-                      yaxis={"title": "% of documents", "rangemode": "tozero", "gridcolor": "#e5e7eb"},
-                      xaxis={"tickangle": -45, "nticks": 16}, plot_bgcolor="white", paper_bgcolor="white")
-    ctrl.trend_chart_update(fig)
+    state.trend_title = f"Share of {label} mentioning {row['name']}, by quarter"
+    state.trend_chart = "data:image/svg+xml;utf8," + quote(line_svg(TREND["quarters"][:len(share)], share, "%"))
+
+
+def trends_view():
+    with bar():
+        toggle("trend_what", [("Terms and code areas", "terms"), ("Themes", "themes")])
+        toggle("trend_source", [("Merge requests", "mr"), ("Forum", "discourse")])
+        toggle("trend_kind", [("Emerging", "emerging"), ("Past bursts", "past"), ("Fading", "fading")])
+        with react.If(value="trend_what === 'terms'"):
+            with html.Label(style={"display": "flex", "alignItems": "center", "fontSize": "0.9rem"}):
+                mui.Checkbox(checked=B("trend_common"), size="small",
+                             on_change=C("trend_common = $event.target.checked"))
+                html.Span("Common English words")
+    with mui.Box(style={"display": "flex", "gap": "12px"}):
+        with mui.Box(style={"flex": "5", "minWidth": 0}):
+            with table(220), mui.Table(size="small", sticky_header=True):
+                head(("Term, code area, or theme", None), ("Ratio", 70), ("Docs", 70), ("First seen", 90),
+                     ("Peak", 80))
+                with mui.TableBody():
+                    with react.For(items="trend_rows", name="t"):
+                        with mui.TableRow(key=B("t.name"), hover=True, selected=B("t.name === trend_name"),
+                                          on_click=C("trend_name = t.name"), style={"cursor": "pointer"}):
+                            mui.TableCell([B("t.name")], style={"color": "#0969da"})
+                            mui.TableCell([B("t.ratio")])
+                            mui.TableCell([B("t.docs")])
+                            mui.TableCell([B("t.first_seen")])
+                            mui.TableCell([B("t.peak")])
+        with mui.Box(style={"flex": "7", "minWidth": 0}):
+            with react.If(value="trend_chart"):
+                with mui.Paper(variant="outlined", style={"padding": "8px"}):
+                    html.Div([B("trend_title")], style={"fontWeight": 600, "fontSize": "0.9rem"})
+                    html.Img(src=B("trend_chart"), alt=B("trend_title"), style={"width": "100%"})
+            with react.If(value="trend_row"):
+                with mui.Paper(variant="outlined", style={"padding": "12px", "marginTop": "8px",
+                                                          "fontSize": "0.9rem"}):
+                    with react.If(value="trend_row.description"):
+                        html.Div([B("trend_row.description")], style={"marginBottom": "8px"})
+                    html.Div("Examples across the record", style={"fontWeight": 600})
+                    with react.For(items="trend_row.examples", name="e"):
+                        with html.Div(key=B("e.source + e.id"), style={"margin": "4px 0"}):
+                            html.Span([B("e.q"), " "], style={"color": MUTED})
+                            link("e.source === 'mr' ? '!' + e.id : 'topic ' + e.id", "e.url")
+                            html.Span([" ", B("e.title")])
+
+
+# ----------------------------------------------------------------------------- Search
 
 
 def run_search(q=None):
@@ -147,7 +377,7 @@ def run_search(q=None):
     state.searching, state.search_error = True, ""
     state.flush()
     try:
-        state.search_rows = store.search(state.q, state.q_kind, state.q_since, state.q_until)
+        state.search_rows = store.search(state.q, state.q_kind or None, state.q_since, state.q_until)
     except OSError as e:
         state.search_error = f"Search needs the DGX Spark for meaning-based matching and could not reach it: {e}"
         state.search_rows = []
@@ -155,180 +385,47 @@ def run_search(q=None):
         state.searching = False
 
 
-ctrl.search = run_search
-
-
-def link(text, url):
-    return html.A(text, href=(url,), target="_blank", classes="text-decoration-none")
-
-
-def rules_view():
-    with v.VRow(dense=True):
-        with v.VCol(cols=7):
-            with v.VRow(dense=True, classes="mb-2"):
-                v.VTextField(v_model=("rule_search",), label="Filter rules", density="compact", hide_details=True,
-                             prepend_inner_icon="mdi-magnify", clearable=True)
-                v.VSelect(v_model=("rule_topic",), items=("topics",), label="Topic", density="compact",
-                          hide_details=True, clearable=True, style="max-width: 200px")
-                v.VSelect(v_model=("rule_decision",), items=("decisions",), label="Decision", density="compact",
-                          hide_details=True, clearable=True, style="max-width: 160px")
-                v.VSelect(v_model=("rule_flag",), items=(["deprecated API", "mixed evidence"],), label="Flag",
-                          density="compact", hide_details=True, clearable=True, style="max-width: 180px")
-            html.Div("{{ rule_counts }}", classes="text-caption text-medium-emphasis mb-1")
-            with v.VDataTable(headers=("rule_headers", RULE_HEADERS), items=("rule_rows",), search=("rule_search",),
-                              density="compact", items_per_page=25, hover=True, height="calc(100vh - 250px)",
-                              fixed_header=True):
-                with v.Template(raw_attrs=['v-slot:item.id="{ item }"']):
-                    html.A("{{ item.id }}", click="rule_key = item.key", style="cursor: pointer",
-                           classes=("item.key === rule_key ? 'font-weight-bold text-primary' : 'text-primary'",))
-                with v.Template(raw_attrs=['v-slot:item.rule="{ item }"']):
-                    html.Div("{{ item.rule }}", click="rule_key = item.key", style="cursor: pointer",
-                             classes=("item.key === rule_key ? 'font-weight-bold' : ''",))
-                with v.Template(raw_attrs=['v-slot:item.flags="{ item }"']):
-                    v.VChip("deprecated API", v_if="item.deprecated", size="x-small", color="orange", classes="mr-1")
-                    v.VChip("mixed", v_if="item.mixed", size="x-small", color="purple")
-                with v.Template(raw_attrs=['v-slot:item.decision="{ item }"']):
-                    v.VChip("{{ item.decision }}", size="small", variant="tonal",
-                            color=(f"({DECISION_COLOR})[item.decision]",))
-        with v.VCol(cols=5):
-            rule_detail()
-
-
-def evidence_list(field, title, color=None):
-    with html.Div(v_if=f"rule.{field}.length", classes="mt-3"):
-        html.Div(title, classes=f"text-subtitle-2 {color or ''}")
-        with html.Div(v_for=f"e in rule.{field}", key="e.mr + e.date", classes="text-body-2 my-2"):
-            link("!{{ e.mr }}", "e.url")
-            html.Span(" {{ e.reviewer }}, {{ e.date }}", classes="text-medium-emphasis")
-            html.Div("{{ e.text }}", classes="pl-3", style="border-left: 3px solid #d0d7de")
-
-
-def rule_detail():
-    with v.VCard(v_if="rule", variant="outlined", classes="pa-3", style="height: calc(100vh - 140px); overflow-y: auto"):
-        with html.Div(classes="d-flex align-center mb-2"):
-            html.Span("{{ rule.id }}", classes="text-h6 mr-2")
-            v.VChip("{{ rule.topic }}", size="small", classes="mr-2")
-            v.VChip("{{ rule.decision }}", size="small", variant="tonal", color=(f"({DECISION_COLOR})[rule.decision]",))
-            v.VSpacer()
-            html.Span("{{ rule.decided_by ? rule.decided_by + ', ' + rule.decided_at : '' }}",
-                      classes="text-caption text-medium-emphasis")
-        v.VTextarea(v_model=("rule_text",), label="Rule (edit before accepting to record an edited rule)",
-                    auto_grow=True, rows=2, density="compact", hide_details=True)
-        html.Div("Draft: {{ rule.draft }}", v_if="rule_text !== rule.draft",
-                 classes="text-caption text-medium-emphasis mt-1")
-        v.VTextField(v_model=("rule_note",), label="Note (why, or what should change)", density="compact",
-                     hide_details=True, classes="mt-2")
-        with html.Div(classes="d-flex mt-2"):
-            v.VBtn("Accept", color="green", variant="flat", size="small", click=ctrl.accept, classes="mr-2",
-                   prepend_icon="mdi-check")
-            v.VBtn("Reject", color="red", variant="flat", size="small", click=ctrl.reject, classes="mr-2",
-                   prepend_icon="mdi-close")
-            v.VBtn("Clear decision", variant="text", size="small", click=ctrl.clear)
-        html.Div("Rationale: {{ rule.rationale }}", v_if="rule.rationale", classes="text-body-2 mt-3")
-        html.Div("Scope: {{ rule.scope }}", classes="text-body-2")
-        html.Div("Support: {{ rule.support }}", classes="text-body-2")
-        html.Div("Reviewers: {{ rule.reviewers }}", classes="text-body-2")
-        with html.Div(v_if="rule.conflicts.length", classes="mt-3"):
-            html.Div("Names APIs VTK has since deprecated or removed", classes="text-subtitle-2 text-orange-darken-3")
-            with html.Div(v_for="d in rule.conflicts", key="d.api + d.version", classes="text-body-2 my-1"):
-                html.Span("{{ d.api }}", style=MONO)
-                html.Span(" deprecated in {{ d.version }} ({{ d.deprecated_on }}")
-                with html.Span(v_if="d.deprecated_mr"):
-                    html.Span(", ")
-                    link("!{{ d.deprecated_mr }}", "d.deprecated_url")
-                html.Span(")")
-                html.Span(": {{ d.reason }}", v_if="d.reason")
-        evidence_list("examples", "Supporting comments")
-        evidence_list("counter", "Counter-evidence", "text-purple")
-    with v.VCard(v_else=True, variant="outlined", classes="pa-6 text-medium-emphasis"):
-        html.Div("Select a rule to see its evidence and record a decision.")
-
-
-def deprecations_view():
-    with v.VRow(dense=True, classes="mb-2"):
-        v.VTextField(v_model=("dep_search",), label="Search APIs, reasons, versions", density="compact",
-                     hide_details=True, prepend_inner_icon="mdi-magnify", clearable=True)
-        v.VSelect(v_model=("dep_outcome",), items=(["present", "removed", "undeprecated"],), label="Status",
-                  density="compact", hide_details=True, clearable=True, style="max-width: 200px")
-    html.Div("{{ dep_rows.length }} deprecated APIs. 'present' means still deprecated in the current tree.",
-             classes="text-caption text-medium-emphasis mb-1")
-    with v.VDataTable(headers=("dep_headers", DEP_HEADERS), items=("dep_rows",), search=("dep_search",),
-                      density="compact", items_per_page=50, hover=True, height="calc(100vh - 230px)",
-                      fixed_header=True):
-        with v.Template(raw_attrs=['v-slot:item.api="{ item }"']):
-            html.Span("{{ item.api }}", title=("item.declaration",), style=MONO)
-        with v.Template(raw_attrs=['v-slot:item.deprecated_mr="{ item }"']):
-            html.Span("{{ item.deprecated_on }} ")
-            with html.Span(v_if="item.deprecated_mr"):
-                link("!{{ item.deprecated_mr }}", "item.deprecated_url")
-        with v.Template(raw_attrs=['v-slot:item.removed_mr="{ item }"']):
-            html.Span("{{ item.removed_on }} ")
-            with html.Span(v_if="item.removed_mr"):
-                link("!{{ item.removed_mr }}", "item.removed_url")
-
-
-def trends_view():
-    with v.VRow(dense=True, classes="mb-2"):
-        for model, choices in (("trend_what", [("Terms and code areas", "terms"), ("Themes", "themes")]),
-                               ("trend_source", [("Merge requests", "mr"), ("Forum", "discourse")]),
-                               ("trend_kind", [("Emerging", "emerging"), ("Past bursts", "past"), ("Fading", "fading")])):
-            with v.VBtnToggle(v_model=(model,), mandatory=True, density="compact", color="primary", variant="outlined",
-                              classes="mr-3 mb-1"):
-                for label, value in choices:
-                    v.VBtn(label, value=value)
-        v.VCheckbox(v_model=("trend_common",), label="Common English words", density="compact", hide_details=True,
-                    v_if="trend_what === 'terms'")
-    with v.VRow(dense=True):
-        with v.VCol(cols=5):
-            with v.VDataTable(headers=("trend_headers", TREND_HEADERS), items=("trend_rows",), density="compact",
-                              items_per_page=40, hover=True, height="calc(100vh - 220px)", fixed_header=True):
-                with v.Template(raw_attrs=['v-slot:item.name="{ item }"']):
-                    html.Div("{{ item.name }}", click="trend_name = item.name", style="cursor: pointer",
-                             classes=("item.name === trend_name ? 'font-weight-bold text-primary' : 'text-primary'",))
-        with v.VCol(cols=7):
-            with v.VCard(variant="outlined", classes="pa-2"):
-                figure = plotly.Figure(display_logo=False, display_mode_bar=False, style="height: 290px")
-                ctrl.trend_chart_update = figure.update
-            with v.VCard(v_if="trend_row", variant="outlined", classes="pa-3 mt-2"):
-                html.Div("{{ trend_row.description }}", v_if="trend_row.description", classes="text-body-2 mb-2")
-                html.Div("Examples across the record", classes="text-subtitle-2")
-                with html.Div(v_for="e in trend_row.examples", key="e.id", classes="text-body-2 my-1"):
-                    html.Span("{{ e.q }} ", classes="text-medium-emphasis")
-                    link("{{ e.source === 'mr' ? '!' + e.id : 'topic ' + e.id }}", "e.url")
-                    html.Span(" {{ e.title }}")
+def search_key(key, value):
+    if key == "Enter":
+        run_search(value)
 
 
 def search_view():
-    with v.VRow(dense=True, classes="mb-2"):
-        v.VTextField(v_model=("q",), label="Ask about VTK history: an API, a design question, a bug",
-                     density="compact", hide_details=True, prepend_inner_icon="mdi-magnify", clearable=True,
-                     __events=[("keyup_enter", "keyup.enter")], keyup_enter=(ctrl.search, "[$event.target.value]"))
-        v.VSelect(v_model=("q_kind",), items=(["thread", "mr", "issue", "post", "doc", "note", "class"],), label="Kind",
-                  density="compact",
-                  hide_details=True, clearable=True, style="max-width: 130px")
-        v.VTextField(v_model=("q_since",), label="Since (YYYY-MM-DD)", density="compact", hide_details=True,
-                     style="max-width: 170px")
-        v.VTextField(v_model=("q_until",), label="Before (YYYY-MM-DD)", density="compact", hide_details=True,
-                     style="max-width: 170px")
-        v.VBtn("Search", color="primary", click=(ctrl.search, "[q]"), loading=("searching",))
-    v.VAlert("{{ search_error }}", v_if="search_error", type="warning", density="compact", classes="mb-2")
-    with v.VDataTable(headers=("search_headers", SEARCH_HEADERS), items=("search_rows",), density="compact",
-                      items_per_page=25, height="calc(100vh - 220px)", fixed_header=True):
-        with v.Template(raw_attrs=['v-slot:item.ref="{ item }"']):
-            link("{{ item.ref }}", "item.url")
-        with v.Template(raw_attrs=['v-slot:item.title="{ item }"']):
-            html.Div("{{ item.title }}", classes="font-weight-medium")
-            html.Div("{{ item.path }}", v_if="item.path", classes="text-caption text-medium-emphasis")
-            html.Div("{{ item.snippet }}", classes="text-body-2 text-medium-emphasis mb-1")
+    with bar():
+        field("Ask about VTK history: an API, a design question, a bug", "q", on_enter=search_key)
+        select("Kind", "q_kind", "kinds", 120)
+        field("Since (YYYY-MM-DD)", "q_since", 170)
+        field("Before (YYYY-MM-DD)", "q_until", 170)
+        mui.Button("Search", variant="contained", size="small", loading=B("searching"),
+                   on_click=C(run_search, "[q]"))
+    with react.If(value="search_error"):
+        mui.Alert([B("search_error")], severity="warning", style={"marginBottom": "8px"})
+    with table(220), mui.Table(size="small", sticky_header=True):
+        head(("Kind", 70), ("Ref", 110), ("Date", 100), ("Author", 130), ("Title and excerpt", None))
+        with mui.TableBody():
+            with react.For(items="search_rows", name="s"):
+                with mui.TableRow(key=B("s.kind + s.ref + (s.path || '')"), hover=True):
+                    mui.TableCell([B("s.kind")])
+                    with mui.TableCell():
+                        link("s.ref", "s.url")
+                    mui.TableCell([B("s.date")], style={"whiteSpace": "nowrap"})
+                    mui.TableCell([B("s.author")])
+                    with mui.TableCell():
+                        html.Div([B("s.title")], style={"fontWeight": 500})
+                        with react.If(value="s.path"):
+                            caption([B("s.path")])
+                        caption([B("s.snippet")])
 
+
+# ----------------------------------------------------------------------------- Review
 
 REV = {"record": None, "revs": [], "files": [], "runs": [], "reviewers": []}
 ROW_BG = {"add": "#e6ffec", "del": "#ffebe9", "hunk": "#ddf4ff", "ctx": "transparent"}
 state.update({"rv_iid": "", "rv_mr": None, "rv_revisions": [], "rv_rev": None, "rv_runs": [], "rv_run": None,
               "rv_files": [], "rv_file": None, "rv_rows": [], "rv_outside": [], "rv_findings": [], "rv_trace": [],
-              "rv_models": ["qwen3-coder-next:q4_K_M", "gpt-oss:120b"], "rv_model": "qwen3-coder-next:q4_K_M",
-              "rv_running": False, "rv_status": "", "rv_summary": reviews.summary(), "rv_note": "",
-              "rv_queue": reviews.reviewed_mrs(), "rv_pick": None})
+              "rv_models": options(["qwen3-coder-next:q4_K_M", "gpt-oss:120b"]),
+              "rv_model": "qwen3-coder-next:q4_K_M", "rv_running": False, "rv_status": "",
+              "rv_summary": reviews.summary(), "rv_note": "", "rv_queue": reviews.reviewed_mrs(), "rv_pick": None})
 
 
 @state.change("rv_pick")
@@ -362,6 +459,11 @@ def load_mr(iid=None):
     on_revision(pick)
 
 
+def mr_key(key, value):
+    if key == "Enter":
+        load_mr(value)
+
+
 @state.change("rv_rev")
 def on_revision(rv_rev, **_):
     if rv_rev is None or rv_rev >= len(REV["revs"]):
@@ -392,14 +494,19 @@ def load_runs(select_file=None):
 def on_run(rv_run, select_file=None, **_):
     predictions, _label = current_predictions()
     run = REV["runs"][rv_run] if rv_run is not None and rv_run < len(REV["runs"]) else None
-    state.rv_findings = run["findings"] if run else []
+    state.rv_findings = [dict(f, name=f["path"].split("/")[-1]) for f in (run["findings"] if run else [])]
     state.rv_trace = [f"{t['step']}: {t['tool']}({', '.join(f'{k}={v}' for k, v in (t['args'] or {}).items())})"[:200]
                       for t in (run["trace"] if run else [])]
-    state.rv_files = [{"path": f["path"], "added": f["added"], "removed": f["removed"],
-                       "agent": sum(p["path"] == f["path"] for p in predictions),
-                       "reviewer": sum(c["path"] == f["path"] for c in REV["reviewers"])} for f in REV["files"]]
-    paths = [f["path"] for f in state.rv_files]
-    commented = [f["path"] for f in state.rv_files if f["agent"] or f["reviewer"]]
+    files = []
+    for f in REV["files"]:
+        agent = sum(p["path"] == f["path"] for p in predictions)
+        people = sum(c["path"] == f["path"] for c in REV["reviewers"])
+        files.append({"path": f["path"], "name": f["path"].split("/")[-1], "agent": agent, "reviewer": people,
+                      "stats": f"+{f['added']} -{f['removed']}" + (f" · agent {agent}" if agent else "")
+                      + (f" · reviewers {people}" if people else "")})
+    state.rv_files = files
+    paths = [f["path"] for f in files]
+    commented = [f["path"] for f in files if f["agent"] or f["reviewer"]]
     state.rv_file = select_file or (state.rv_file if state.rv_file in paths else (commented or paths or [None])[0])
     render_file(state.rv_file)
 
@@ -407,33 +514,38 @@ def on_run(rv_run, select_file=None, **_):
 @state.change("rv_file")
 def render_file(rv_file, **_):
     predictions, _label = current_predictions()
-    head = REV["revs"][state.rv_rev]["head"] if state.rv_rev is not None else ""
+    head_sha = REV["revs"][state.rv_rev]["head"] if state.rv_rev is not None else ""
     rated = reviews.ratings()
     iid = state.rv_mr["iid"] if state.rv_mr else None
-    agent = [dict(p, key=comment_key(iid, head, p), verdict=rated.get(comment_key(iid, head, p), {}).get("verdict"))
+    agent = [dict(p, key=comment_key(iid, head_sha, p),
+                  verdict=rated.get(comment_key(iid, head_sha, p), {}).get("verdict"))
              for p in predictions if p["path"] == rv_file]
-    people = [c for c in REV["reviewers"] if c["path"] == rv_file]
+    people = [dict(c, key=f"{c['author']}{c['date']}{c['body'][:20]}") for c in REV["reviewers"]
+              if c["path"] == rv_file]
     f = next((x for x in REV["files"] if x["path"] == rv_file), None)
     rows, placed = [], set()
-    for r in (f["rows"] if f else []):
-        row = dict(r, bg=ROW_BG[r["kind"]], agent=[], people=[])
+    for i, r in enumerate(f["rows"] if f else []):
+        sign = "+" if r["kind"] == "add" else "-" if r["kind"] == "del" else " "
+        row = dict(r, i=i, bg=ROW_BG[r["kind"]], line=sign + r["text"], agent=[], people=[])
         if r["new"] != "":
             row["agent"] = [c for c in agent if c["line"] == r["new"]]
             row["people"] = [c for c in people if c["line"] == r["new"]]
         elif r["old"] != "":
             row["people"] = [c for c in people if c["line"] is None and c["old_line"] == r["old"]]
-        placed.update(id(c) for c in row["agent"] + row["people"])
+        placed.update(c["key"] for c in row["agent"] + row["people"])
         rows.append(row)
     state.rv_rows = rows
-    state.rv_outside = [c for c in agent + people if id(c) not in placed]
+    outside = [c for c in agent + people if c["key"] not in placed]
+    state.rv_outside = {"agent": [c for c in outside if c.get("comment")],
+                        "people": [c for c in outside if c.get("body")]}
 
 
 def rate(key, verdict):
     predictions, label = current_predictions()
-    head = REV["revs"][state.rv_rev]["head"]
-    comment = next((p for p in predictions if comment_key(state.rv_mr["iid"], head, p) == key), None)
+    head_sha = REV["revs"][state.rv_rev]["head"]
+    comment = next((p for p in predictions if comment_key(state.rv_mr["iid"], head_sha, p) == key), None)
     if comment:
-        reviews.rate(state.rv_mr["iid"], head, comment, verdict, state.rv_note, label)
+        reviews.rate(state.rv_mr["iid"], head_sha, comment, verdict, state.rv_note, label)
         state.rv_note = ""
         state.rv_summary = reviews.summary()
         state.rv_queue = reviews.reviewed_mrs()
@@ -461,126 +573,133 @@ async def run_agent():
             state.rv_running = False
 
 
-ctrl.load_mr = load_mr
-ctrl.rate = rate
-ctrl.run_agent = run_agent
+def agent_cards(items):
+    with react.For(items=items, name="c"):
+        with mui.Paper(key=B("c.key"), variant="outlined",
+                       style={"margin": "6px", "padding": "8px", "borderLeft": "4px solid #1f6feb",
+                              "fontFamily": "Roboto, sans-serif"}):
+            with mui.Stack(direction="row", spacing=0.5, style={"alignItems": "center", "marginBottom": "4px"}):
+                mui.Chip(label="agent", size="small", color="primary")
+                with react.If(value="c.severity"):
+                    mui.Chip(label=B("c.severity"), size="small")
+                with react.If(value="c.basis"):
+                    caption([B("c.basis")])
+                mui.Box(style={"flex": "1"})
+                for verdict, color in (("valid", "success"), ("wrong", "error"), ("unsure", "inherit")):
+                    mui.Button(verdict, size="small", color=color,
+                               variant=B(f"c.verdict === '{verdict}' ? 'contained' : 'outlined'"),
+                               on_click=C(rate, f"[c.key, '{verdict}']"),
+                               style={"minWidth": 0, "padding": "0 8px", "marginLeft": "4px"})
+            html.Div([B("c.comment")], style={"whiteSpace": "pre-wrap", "fontSize": "0.875rem"})
 
 
-def comment_card(field, agent):
-    color = "#1f6feb" if agent else "#8c959f"
-    with v.VCard(v_for=f"c in {field}", key="c.key || (c.author + c.date + c.body.slice(0, 20))", variant="outlined",
-                 classes="ma-2", style=f"border-left: 4px solid {color}"):
-        with v.VCardText(classes="pa-2"):
-            if agent:
-                with html.Div(classes="d-flex align-center mb-1"):
-                    v.VChip("agent", size="x-small", color="primary", classes="mr-1")
-                    v.VChip("{{ c.severity }}", v_if="c.severity", size="x-small", classes="mr-1")
-                    html.Span("{{ c.basis }}", v_if="c.basis", classes="text-caption text-medium-emphasis")
-                    v.VSpacer()
-                    for verdict, icon, col in (("valid", "mdi-check", "green"), ("wrong", "mdi-close", "red"),
-                                               ("unsure", "mdi-help", "grey")):
-                        v.VBtn(verdict, size="x-small", prepend_icon=icon, classes="ml-1",
-                               color=(f"c.verdict === '{verdict}' ? '{col}' : undefined",),
-                               variant=(f"c.verdict === '{verdict}' ? 'flat' : 'outlined'",),
-                               click=(ctrl.rate, f"[c.key, '{verdict}']"))
-                html.Div("{{ c.comment }}", classes="text-body-2", style="white-space: pre-wrap")
-            else:
-                with html.Div(classes="mb-1"):
-                    v.VChip("{{ c.author }}", size="x-small", classes="mr-1")
-                    html.Span("{{ c.date }}", classes="text-caption text-medium-emphasis")
-                html.Div("{{ c.body }}", classes="text-body-2", style="white-space: pre-wrap")
-                with html.Div(v_for="r in c.replies", key="r.author + r.body.slice(0, 20)",
-                              classes="text-body-2 text-medium-emphasis pl-3 mt-1"):
-                    html.B("{{ r.author }}: ")
-                    html.Span("{{ r.body }}", style="white-space: pre-wrap")
+def people_cards(items):
+    with react.For(items=items, name="c"):
+        with mui.Paper(key=B("c.key"), variant="outlined",
+                       style={"margin": "6px", "padding": "8px", "borderLeft": "4px solid #8c959f",
+                              "fontFamily": "Roboto, sans-serif", "fontSize": "0.875rem"}):
+            with html.Div(style={"marginBottom": "4px"}):
+                mui.Chip(label=B("c.author"), size="small", style={"marginRight": "6px"})
+                html.Span([B("c.date")], style={"color": MUTED, "fontSize": "0.8rem"})
+            html.Div([B("c.body")], style={"whiteSpace": "pre-wrap"})
+            with react.For(items="c.replies", name="r"):
+                with html.Div(key=B("r.author + r.body.slice(0, 20)"),
+                              style={"color": MUTED, "paddingLeft": "12px", "marginTop": "4px"}):
+                    html.B([B("r.author"), ": "])
+                    html.Span([B("r.body")], style={"whiteSpace": "pre-wrap"})
 
 
 def review_view():
-    with v.VRow(dense=True, classes="mb-1 align-center"):
-        v.VTextField(v_model=("rv_iid",), label="MR number", density="compact", hide_details=True,
-                     style="max-width: 140px", __events=[("keyup_enter", "keyup.enter")],
-                     keyup_enter=(ctrl.load_mr, "[$event.target.value]"))
-        v.VBtn("Load", size="small", classes="ml-2", click=(ctrl.load_mr, "[rv_iid]"))
-        v.VSelect(v_model=("rv_pick",), items=("rv_queue",), label="Or pick an MR the agent reviewed",
-                  density="compact", hide_details=True, classes="ml-3", style="max-width: 360px")
-        v.VSelect(v_model=("rv_rev",), items=("rv_revisions",), label="Revision", density="compact", hide_details=True,
-                  classes="ml-3", style="max-width: 380px", v_if="rv_revisions.length")
-        v.VSelect(v_model=("rv_run",), items=("rv_runs",), label="Agent review", density="compact", hide_details=True,
-                  classes="ml-3", style="max-width: 380px", v_if="rv_mr", no_data_text="No saved review; run the agent")
-        v.VSelect(v_model=("rv_model",), items=("rv_models",), label="Model", density="compact", hide_details=True,
-                  classes="ml-3", style="max-width: 220px", v_if="rv_mr")
-        v.VBtn("Run agent", color="primary", size="small", classes="ml-2", v_if="rv_mr", loading=("rv_running",),
-               click=ctrl.run_agent)
-    with html.Div(v_if="rv_mr", classes="d-flex align-center text-body-2 mb-1"):
-        link("!{{ rv_mr.iid }}", "rv_mr.url")
-        html.Span(" {{ rv_mr.title }} ({{ rv_mr.author }}, {{ rv_mr.state }})", classes="ml-1")
-        v.VSpacer()
-        html.Span("Your ratings: {{ rv_summary }}", classes="text-caption text-medium-emphasis")
-    html.Div("{{ rv_status }}", v_if="rv_status", classes="text-body-2 text-orange-darken-3 mb-1")
-    with v.VRow(dense=True, v_if="rv_mr"):
-        with v.VCol(cols=3):
-            with v.VList(density="compact", nav=True, style="max-height: calc(100vh - 330px); overflow-y: auto"):
-                with v.VListItem(v_for="f in rv_files", key="f.path", active=("f.path === rv_file",),
-                                 click="rv_file = f.path"):
-                    v.VListItemTitle("{{ f.path.split('/').pop() }}", title=("f.path",))
-                    v.VListItemSubtitle("+{{ f.added }} -{{ f.removed }}"
-                                        "{{ f.agent ? ' · agent ' + f.agent : '' }}"
-                                        "{{ f.reviewer ? ' · reviewers ' + f.reviewer : '' }}")
-            v.VTextField(v_model=("rv_note",), label="Note for your next rating (optional)", density="compact",
-                         hide_details=True, classes="mt-2")
-            with v.VExpansionPanels(classes="mt-2", v_if="rv_findings.length || rv_trace.length"):
-                with v.VExpansionPanel(title=("'Static checks (' + rv_findings.length + ')'",)):
-                    with v.VExpansionPanelText():
-                        html.Div("{{ f.kind }}: {{ f.path.split('/').pop() }}:{{ f.line }} {{ f.fact }}",
-                                 v_for="f in rv_findings", key="f.path + f.line + f.kind", classes="text-caption mb-1")
-                with v.VExpansionPanel(title=("'Agent steps (' + rv_trace.length + ')'",)):
-                    with v.VExpansionPanelText():
-                        html.Div("{{ t }}", v_for="(t, i) in rv_trace", key="i", classes="text-caption",
-                                 style=MONO)
-        with v.VCol(cols=9):
-            with html.Div(style="max-height: calc(100vh - 250px); overflow: auto; border: 1px solid #d0d7de"):
-                with html.Div(v_if="rv_outside.length", classes="pa-1", style="background: #fff8c5"):
-                    html.Div("Comments on lines outside the diff", classes="text-caption px-2")
-                    comment_card("rv_outside.filter(c => c.comment)", True)
-                    comment_card("rv_outside.filter(c => c.body)", False)
-                with html.Table(style="width: 100%; border-collapse: collapse; " + MONO):
-                    with v.Template(v_for="(row, i) in rv_rows", key="i"):
-                        with html.Tr(style=("{ background: row.bg }",)):
-                            html.Td("{{ row.old }}", style="width: 48px; text-align: right; color: #8c959f; padding: 0 6px")
-                            html.Td("{{ row.new }}", style="width: 48px; text-align: right; color: #8c959f; padding: 0 6px")
-                            html.Td("{{ row.kind === 'add' ? '+' : row.kind === 'del' ? '-' : ' ' }}{{ row.text }}",
-                                    style="white-space: pre; padding: 0 6px")
-                        with html.Tr(v_if="row.agent.length || row.people.length"):
-                            with html.Td(colspan=3, style="font-family: inherit; background: #f6f8fa"):
-                                comment_card("row.agent", True)
-                                comment_card("row.people", False)
+    with bar():
+        field("MR number", "rv_iid", 120, on_enter=mr_key)
+        mui.Button("Load", size="small", variant="outlined", on_click=C(load_mr, "[rv_iid]"))
+        select("Or pick an MR the agent reviewed", "rv_pick", "rv_queue", 360, numeric=True)
+        with react.If(value="rv_revisions.length"):
+            select("Revision", "rv_rev", "rv_revisions", 340, numeric=True, empty=False)
+        with react.If(value="rv_mr"):
+            select("Agent review", "rv_run", "rv_runs", 340, numeric=True, empty=False)
+            select("Model", "rv_model", "rv_models", 210, empty=False)
+            mui.Button("Run agent", variant="contained", size="small", loading=B("rv_running"),
+                       on_click=C(run_agent))
+    with react.If(value="rv_mr"):
+        with html.Div(style={"display": "flex", "alignItems": "center", "fontSize": "0.9rem",
+                             "marginBottom": "4px"}):
+            link("'!' + rv_mr.iid", "rv_mr.url")
+            html.Span([" ", B("rv_mr.title"), " (", B("rv_mr.author"), ", ", B("rv_mr.state"), ")"],
+                      style={"marginLeft": "4px"})
+            html.Div(style={"flex": "1"})
+            caption(["Your ratings: ", B("rv_summary")])
+        with react.If(value="rv_mr && !rv_runs.length"):
+            caption("No saved agent review for this revision. Run the agent to make one.", marginBottom="4px")
+    with react.If(value="rv_status"):
+        html.Div([B("rv_status")], style={"color": "#bc4c00", "fontSize": "0.9rem", "marginBottom": "4px"})
+    with react.If(value="rv_mr"):
+        with mui.Box(style={"display": "flex", "gap": "12px"}):
+            with mui.Box(style={"width": "25%", "minWidth": 0}):
+                with mui.List(dense=True, style={"maxHeight": "calc(100vh - 360px)", "overflowY": "auto"}):
+                    with react.For(items="rv_files", name="f"):
+                        with mui.ListItemButton(key=B("f.path"), selected=B("f.path === rv_file"),
+                                                on_click=C("rv_file = f.path"), title=B("f.path")):
+                            mui.ListItemText(primary=B("f.name"), secondary=B("f.stats"))
+                with html.Div(style={"display": "flex", "marginTop": "8px"}):
+                    field("Note for your next rating (optional)", "rv_note")
+                with react.If(value="rv_findings.length"):
+                    with html.Details(style={"marginTop": "8px", "fontSize": "0.8rem"}):
+                        html.Summary([B("'Static checks (' + rv_findings.length + ')'")],
+                                     style={"cursor": "pointer", "fontSize": "0.9rem"})
+                        with react.For(items="rv_findings", name="f"):
+                            html.Div([B("f.kind"), ": ", B("f.name"), ":", B("f.line"), " ", B("f.fact")],
+                                     key=B("f.path + f.line + f.kind"), style={"margin": "4px 0"})
+                with react.If(value="rv_trace.length"):
+                    with html.Details(style={"marginTop": "8px", "fontSize": "0.8rem"}):
+                        html.Summary([B("'Agent steps (' + rv_trace.length + ')'")],
+                                     style={"cursor": "pointer", "fontSize": "0.9rem"})
+                        with react.For(items="rv_trace", name="t"):
+                            html.Div([B("t")], key=B("t"), style={"fontFamily": MONO})
+            with mui.Box(style={"width": "75%", "minWidth": 0, "maxHeight": "calc(100vh - 260px)",
+                                "overflow": "auto", "border": "1px solid #d0d7de"}):
+                with react.If(value="rv_outside.agent.length || rv_outside.people.length"):
+                    with html.Div(style={"background": "#fff8c5", "padding": "4px"}):
+                        caption("Comments on lines outside the diff", padding="0 8px")
+                        agent_cards("rv_outside.agent")
+                        people_cards("rv_outside.people")
+                number = {"width": "48px", "flex": "none", "textAlign": "right", "color": "#8c959f",
+                          "padding": "0 6px"}
+                with html.Div(style={"fontFamily": MONO, "fontSize": "0.8rem", "minWidth": "fit-content"}):
+                    with react.For(items="rv_rows", name="row"):
+                        with html.Div(key=B("'r' + row.i")):
+                            with html.Div(style={"display": "flex", "background": B("row.bg")}):
+                                html.Span([B("row.old")], style=number)
+                                html.Span([B("row.new")], style=number)
+                                html.Span([B("row.line")], style={"whiteSpace": "pre", "padding": "0 6px"})
+                            with react.If(value="row.agent.length || row.people.length"):
+                                with html.Div(style={"background": "#f6f8fa", "position": "sticky", "left": 0,
+                                                     "maxWidth": "calc(75vw - 40px)"}):
+                                    agent_cards("row.agent")
+                                    people_cards("row.people")
 
+
+# ----------------------------------------------------------------------------- Layout
 
 with SinglePageLayout(server) as layout:
-    layout.title.set_text("VTK review history")
+    layout.title.children = ["VTK review history"]
+    layout.icon.hide()
     with layout.toolbar:
-        v.VSpacer()
-        with v.VTabs(v_model=("tab",), density="compact"):
-            v.VTab("Review", value="review")
-            v.VTab("Rules", value="rules")
-            v.VTab("Deprecations", value="deprecations")
-            v.VTab("Trends", value="trends")
-            v.VTab("Search", value="search")
+        mui.Box(style={"flex": "1"})
+        for value, label in TABS:
+            mui.Button(label, on_click=C(f"tab = '{value}'"),
+                       style={"color": "white", "borderRadius": 0,
+                              "borderBottom": B(f"tab === '{value}' ? '2px solid white' : '2px solid transparent'"),
+                              "opacity": B(f"tab === '{value}' ? 1 : 0.75")})
     with layout.content:
-        with v.VContainer(fluid=True, classes="pa-3"):
-            with v.VWindow(v_model=("tab",)):
-                with v.VWindowItem(value="review"):
-                    review_view()
-                with v.VWindowItem(value="rules"):
-                    rules_view()
-                with v.VWindowItem(value="deprecations"):
-                    deprecations_view()
-                with v.VWindowItem(value="trends"):
-                    trends_view()
-                with v.VWindowItem(value="search"):
-                    search_view()
+        with mui.Box(style={"padding": "12px"}):
+            for value, view in (("review", review_view), ("rules", rules_view), ("deprecations", deprecations_view),
+                                ("trends", trends_view), ("search", search_view)):
+                with react.If(value=f"tab === '{value}'"):
+                    view()
 
 refresh_rules()
+on_dep_filters(state.dep_outcome, state.dep_search)
 on_trend_filters(state.trend_what, state.trend_source, state.trend_kind, state.trend_common)
 
 if __name__ == "__main__":
