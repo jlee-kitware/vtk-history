@@ -584,4 +584,4 @@ refresh_rules()
 on_trend_filters(state.trend_what, state.trend_source, state.trend_kind, state.trend_common)
 
 if __name__ == "__main__":
-    server.start()
+    server.start(timeout=0)
