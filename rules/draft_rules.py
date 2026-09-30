@@ -208,7 +208,7 @@ def main():
     p.add_argument("--labels", default="data/review_labels.jsonl")
     p.add_argument("--cutoff", default="2026-01-01", help="use only threads started before this date")
     p.add_argument("--embed-model", default="qwen3-embedding:latest")
-    p.add_argument("--rule-model", default="nemotron3:33b")
+    p.add_argument("--rule-model", default="qwen3-coder-next:q4_K_M")
     p.add_argument("--threshold", type=float, default=0.25, help="cosine distance for merging conventions")
     p.add_argument("--min-mrs", type=int, default=3)
     p.add_argument("--min-reviewers", type=int, default=2)

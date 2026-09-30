@@ -2,7 +2,7 @@
 """Rescore saved benchmark predictions with a given judge, without rerunning the reviewer.
 
 Usage:
-  python agent/rescore.py data/benchmark/runs-v1/nemotron3_33b
+  python agent/rescore.py data/benchmark/runs-v1/nemotron3_33b  (runs are stored per reviewer model)
 """
 
 import argparse
@@ -18,7 +18,7 @@ def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("run")
     p.add_argument("--benchmark", default="data/benchmark/benchmark.jsonl")
-    p.add_argument("--judge", default="nemotron-3.5-lightning:latest")
+    p.add_argument("--judge", default="qwen3-coder-next:q4_K_M")
     p.add_argument("--window", type=int, default=5)
     args = p.parse_args()
 

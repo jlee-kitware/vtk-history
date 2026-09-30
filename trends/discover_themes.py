@@ -148,7 +148,7 @@ def main():
     p.add_argument("--mirror", default="data/vtk-history")
     p.add_argument("--discourse", default="data/discourse-history")
     p.add_argument("--embed-model", default="qwen3-embedding:latest")
-    p.add_argument("--name-model", default="nemotron-3.5-lightning:latest")
+    p.add_argument("--name-model", default="qwen3-coder-next:q4_K_M")
     p.add_argument("--k", type=int, default=80)
     p.add_argument("--seed", type=int, default=7)
     p.add_argument("--last-quarter", default="2026Q2")

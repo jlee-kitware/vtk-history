@@ -15,7 +15,7 @@ comments per MR. Predictions are cached per MR, so an interrupted run resumes.
 
 Usage:
   python agent/evaluate.py --limit 20
-  python agent/evaluate.py --limit 20 --model nemotron3:33b
+  python agent/evaluate.py --limit 20 --model gpt-oss:120b
 """
 
 import argparse
@@ -93,8 +93,8 @@ def main():
     p.add_argument("--examples", default="data/review_examples.jsonl")
     p.add_argument("--rules", default="data/rules_verified.json")
     p.add_argument("--repo", default="/home/jlee/gitsync/vtk")
-    p.add_argument("--model", default="nemotron-3.5-lightning:latest")
-    p.add_argument("--judge", default="nemotron-3.5-lightning:latest")
+    p.add_argument("--model", default="qwen3-coder-next:q4_K_M")
+    p.add_argument("--judge", default="qwen3-coder-next:q4_K_M")
     p.add_argument("--limit", type=int, default=0)
     p.add_argument("--seed", type=int, default=11)
     p.add_argument("--window", type=int, default=5)

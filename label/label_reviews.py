@@ -105,7 +105,7 @@ def main():
     p.add_argument("--examples", default="data/review_examples.jsonl")
     p.add_argument("--out", default="data/review_labels.jsonl")
     p.add_argument("--host", default="http://192.168.50.23:11435")
-    p.add_argument("--model", default="nemotron-3.5-lightning:latest")
+    p.add_argument("--model", default="qwen3-coder-next:q4_K_M")
     p.add_argument("--parallel", type=int, default=2, help="requests in flight; match OLLAMA_NUM_PARALLEL")
     p.add_argument("--limit", type=int, default=0)
     args = p.parse_args()

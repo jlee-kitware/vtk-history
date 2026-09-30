@@ -236,7 +236,7 @@ def main():
     p.add_argument("--head", required=True)
     p.add_argument("--title", default="")
     p.add_argument("--until", required=True, help="use only history before this date (YYYY-MM-DD)")
-    p.add_argument("--model", default="nemotron-3.5-lightning:latest")
+    p.add_argument("--model", default="qwen3-coder-next:q4_K_M")
     args = p.parse_args()
     comments, n, drafted = Reviewer(args.repo, args.model).review(args.base, args.head, args.title, args.until)
     print(f"{len(comments)} comments kept of {drafted} drafted on {n} hunks")
