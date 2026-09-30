@@ -127,7 +127,7 @@ def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("query")
     p.add_argument("-k", type=int, default=10)
-    p.add_argument("--kind", choices=["thread", "mr", "issue", "post"])
+    p.add_argument("--kind", choices=["thread", "mr", "issue", "post", "doc", "note", "class"])
     p.add_argument("--since")
     p.add_argument("--until")
     p.add_argument("--module")

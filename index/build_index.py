@@ -9,6 +9,9 @@ meaning-based search. Units:
   mr       one merge request's title and description
   issue    one issue's title, description, and discussion
   post     one Discourse post, with its topic title
+  doc      one section of a VTK design document, guide, file format spec, or README (index/docs.py)
+  note     one release note as its author wrote it, linked to the MR that added it
+  class    the Doxygen description of one VTK class
 
 Embeddings come from qwen3-embedding, truncated to --dim dimensions (the model is trained
 so that leading dimensions stand alone) and stored as float16. The embedding cache is
@@ -26,12 +29,16 @@ import html
 import json
 import re
 import sqlite3
+import subprocess
 import sys
 import time
 import urllib.request
 from pathlib import Path
 
 import numpy as np
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import docs  # noqa: E402
 
 HOST = "http://192.168.50.23:11435"
 EMBED_CHARS = 2000
@@ -115,6 +122,16 @@ def posts(discourse):
             }
 
 
+def merge_commits(mirror):
+    by_sha = {}
+    for f in glob.glob(f"{mirror}/merge_requests/*.json"):
+        mr = json.load(open(f))["merge_request"]
+        for key in ("merge_commit_sha", "squash_commit_sha"):
+            if mr.get(key):
+                by_sha[mr[key]] = mr["iid"]
+    return by_sha
+
+
 def write_rows(rows, path):
     path.unlink(missing_ok=True)
     con = sqlite3.connect(path)
@@ -187,12 +204,25 @@ def main():
     p.add_argument("--theme-cache", default="data/trends/doc_embeddings.npy")
     p.add_argument("--out", default="data/index")
     p.add_argument("--no-embed", action="store_true")
+    p.add_argument("--no-docs", action="store_true", help="leave out VTK documentation, release notes, and class docs")
+    p.add_argument("--vtk-repo", default="/home/jlee/gitsync/vtk")
     args = p.parse_args()
 
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
     rows = list(threads(args.examples)) + list(issues(args.mirror)) + list(posts(args.discourse)) + list(mrs(args.mirror))
-    counts = {k: sum(1 for r in rows if r["kind"] == k) for k in ("thread", "issue", "post", "mr")}
+    if not args.no_docs:
+        mr_by_sha = merge_commits(args.mirror)
+        ref = next(r for r in ("upstream/master", "origin/master", "master")
+                   if subprocess.run(["git", "-C", args.vtk_repo, "rev-parse", "--verify", "-q", r],
+                                     capture_output=True).returncode == 0)
+        rows += list(docs.doc_units(args.vtk_repo, ref, mr_by_sha))
+        rows += list(docs.note_units(args.vtk_repo, ref, mr_by_sha))
+        rows += list(docs.class_units(args.vtk_repo, ref, mr_by_sha))
+        for r in rows:
+            if r["kind"] == "note" and r.get("mr"):
+                r["url"] = f"https://gitlab.kitware.com/vtk/vtk/-/merge_requests/{r['mr']}"
+    counts = {k: sum(1 for r in rows if r["kind"] == k) for k in ("thread", "issue", "post", "mr", "doc", "note", "class")}
     print(f"{len(rows)} units: {counts}", flush=True)
     write_rows(rows, out / "docs.sqlite")
     print(f"wrote {out / 'docs.sqlite'}", flush=True)

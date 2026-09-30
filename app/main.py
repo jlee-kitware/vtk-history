@@ -297,7 +297,8 @@ def search_view():
         v.VTextField(v_model=("q",), label="Ask about VTK history: an API, a design question, a bug",
                      density="compact", hide_details=True, prepend_inner_icon="mdi-magnify", clearable=True,
                      __events=[("keyup_enter", "keyup.enter")], keyup_enter=(ctrl.search, "[$event.target.value]"))
-        v.VSelect(v_model=("q_kind",), items=(["thread", "mr", "issue", "post"],), label="Kind", density="compact",
+        v.VSelect(v_model=("q_kind",), items=(["thread", "mr", "issue", "post", "doc", "note", "class"],), label="Kind",
+                  density="compact",
                   hide_details=True, clearable=True, style="max-width: 130px")
         v.VTextField(v_model=("q_since",), label="Since (YYYY-MM-DD)", density="compact", hide_details=True,
                      style="max-width: 170px")
