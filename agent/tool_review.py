@@ -31,6 +31,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import static_checks  # noqa: E402
+import tool_checks  # noqa: E402
 from review import HOST, Reviewer, hunks  # noqa: E402
 
 MAX_STEPS = 40
@@ -56,6 +57,9 @@ WRAP_UP = ("You have {left} steps left. Post each problem you have verified with
 CHECKS_NOTE = ("These are text-search results, so confirm each with grep or read_file before commenting: a method can "
                "be defined by a macro, and a resource can be released through a helper. Each one you confirm is a "
                "problem VTK reviewers raise, so post it.")
+
+TOOLS_NOTE = ("VTK's tools and GitLab robot report these themselves, so do not comment on formatting, spelling, "
+              "whitespace, commit messages, or a missing release note; review what the tools cannot check.")
 
 TOO_EARLY = ("(Not yet: you have not investigated the change. Before finishing, check at least a few things: grep "
              "for the new functions, members, or options to see if they are used, implemented, and set; read the "
@@ -209,10 +213,16 @@ class ToolReviewer(Reviewer):
         full = "\n\n".join(f"=== {p}\n{d}" for p, d in self.diffs.items())
         body = full if len(full) <= FULL_DIFF_CHARS else "(The diff is large; use read_diff for the files you want.)"
         self.findings = static_checks.check(self.repo, head, todo)
+        try:
+            self.tool_findings = tool_checks.check(self.repo, base, head)
+        except Exception as e:  # a missing formatter must not stop the review
+            self.tool_findings = [{"tool": "tool checks", "path": None, "line": None, "message": f"not run: {e}"}]
         messages = [{"role": "system", "content": SYSTEM},
                     {"role": "user", "content": f"Merge request: {title}\n\nChanged files:\n{listing}\n\n"
                                                 f"Automatic checks of the head commit found:\n"
-                                                f"{static_checks.render(self.findings)}\n{CHECKS_NOTE}\n\n{body}"}]
+                                                f"{static_checks.render(self.findings)}\n{CHECKS_NOTE}\n\n"
+                                                f"Tool checks (clang-format, codespell, whitespace, commits):\n"
+                                                f"{tool_checks.render(self.tool_findings)}\n{TOOLS_NOTE}\n\n{body}"}]
         nudges, seen, repeats, warned = 0, set(), 0, False
         for step in range(MAX_STEPS):
             if not warned and (repeats >= 2 or step >= MAX_STEPS - 8):

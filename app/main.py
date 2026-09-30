@@ -34,6 +34,9 @@ from review_data import Reviews, comment_key  # noqa: E402
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "people"))
 from expertise import Expertise, reason  # noqa: E402
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "agent"))
+import tool_checks  # noqa: E402
+
 B, C = react.Bind, react.Callback
 server = get_server(client_type="react")
 state, ctrl = server.state, server.controller
@@ -90,7 +93,9 @@ state.update({
     "topics": options(sorted({r["topic"] for r in store.rules})),
     "decisions": options(["undecided", *DECISIONS]),
     "levels": [{"title": "High", "value": "high"}, {"title": "Medium", "value": "medium"},
-               {"title": "Low", "value": "low"}, {"title": "Conflicts with the guide", "value": "conflict"},
+               {"title": "Low", "value": "low"}, {"title": "Conflicts with the guide or tools", "value": "conflict"},
+               {"title": "Enforced by a tool", "value": "automated"},
+               {"title": "Could be automated", "value": "automatable"},
                {"title": "Documented only", "value": "documented"}],
     "rule_key": None, "rule": None, "rule_text": "", "rule_note": "", "rule_counts": "", "rule_shown": "",
     "dep_rows": [], "dep_search": "", "dep_outcome": "", "dep_shown": "",
@@ -176,6 +181,8 @@ def refresh_rules():
         rows = [r for r in rows if r["decision"] == state.rule_decision]
     if state.rule_level == "conflict":
         rows = [r for r in rows if r["guide_conflict"]]
+    elif state.rule_level in ("automated", "automatable"):
+        rows = [r for r in rows if r[state.rule_level]]
     elif state.rule_level:
         rows = [r for r in rows if r["level"] == state.rule_level]
     needle = (state.rule_search or "").lower().strip()
@@ -225,8 +232,14 @@ def rules_view():
                             with mui.TableCell():
                                 level_pill("r.level")
                                 with react.If(value="r.guide_conflict"):
-                                    html.Div("conflicts with guide", style={"fontSize": "0.7rem", "color": "#B42339",
-                                                                            "marginTop": "4px"})
+                                    html.Div("conflicts", style={"fontSize": "0.7rem", "color": "#B42339",
+                                                                 "marginTop": "4px"})
+                                with react.If(value="r.automated"):
+                                    html.Div("automated", style={"fontSize": "0.7rem", "color": "#0B5C75",
+                                                                 "marginTop": "4px"})
+                                with react.If(value="!r.automated && r.automatable"):
+                                    html.Div("could automate", style={"fontSize": "0.7rem", "color": "#6E56CF",
+                                                                      "marginTop": "4px"})
                             with mui.TableCell():
                                 html.Div([B("r.rule")])
                                 html.Div([B("r.reason")], style={"color": MUTED, "fontSize": "0.76rem",
@@ -497,7 +510,7 @@ state.update({"rv_iid": "", "rv_mr": None, "rv_revisions": [], "rv_rev": None, "
               "rv_models": options(["qwen3-coder-next:q4_K_M", "gpt-oss:120b"]),
               "rv_model": "qwen3-coder-next:q4_K_M", "rv_running": False, "rv_status": "",
               "rv_summary": reviews.summary(), "rv_note": "", "rv_queue": reviews.reviewed_mrs(), "rv_pick": None, "rv_suggest": [],
-              "rv_suggest_note": ""})
+              "rv_suggest_note": "", "rv_tools": []})
 
 
 @state.change("rv_pick")
@@ -550,8 +563,19 @@ def on_revision(rv_rev, **_):
     REV["files"] = files
     REV["reviewers"] = reviews.reviewer_comments(REV["record"], rev["head"])
     suggest_reviewers()
+    run_tool_checks(rev)
     load_runs()
     state.rv_status = ""
+
+
+def run_tool_checks(rev):
+    try:
+        found = tool_checks.check(reviews.repo, rev["base"], rev["head"])
+    except Exception as e:  # show why instead of failing the page
+        found = [{"tool": "tool checks", "path": None, "line": None, "message": f"not run: {e}"}]
+    state.rv_tools = [dict(f, key=f"{f['tool']}{f['path']}{f['line']}{i}",
+                           where=(f"{f['path'].split('/')[-1]}:{f['line']} " if f["line"] else ""))
+                      for i, f in enumerate(found)]
 
 
 def suggest_reviewers():
@@ -563,7 +587,7 @@ def suggest_reviewers():
     state.rv_suggest = [{"user": s["user"], "reason": reason(s), "reviewed": s["user"] in actual} for s in picks]
     state.rv_suggest_note = ("Ranked from who reviewed and wrote these files, weighted to recent work; only people "
                              "active in the last six months. " + ("" if is_open else
-                             "Uses history up to when this MR was opened; a check mark means they did review it."))
+                             "Uses history up to when this MR was opened; \u201creviewed it\u201d marks who did."))
 
 
 def load_runs(select_file=None):
@@ -758,6 +782,16 @@ def review_view():
                             mui.ListItemText(primary=B("f.name"), secondary=B("f.stats"))
                 with html.Div(style={"display": "flex", "marginTop": "8px"}):
                     field("Note for your next rating (optional)", "rv_note")
+                with react.If(value="rv_tools.length"):
+                    with html.Details(open=True, style={"marginTop": "8px", "fontSize": "0.8rem"}):
+                        html.Summary([B("'Tool checks (' + rv_tools.length + ')'")],
+                                     style={"cursor": "pointer", "fontSize": "0.9rem"})
+                        html.Div("What VTK's formatter, spell checker, and GitLab robot will flag on this revision.",
+                                 style={"color": MUTED, "margin": "2px 0 4px"})
+                        with react.For(items="rv_tools", name="t"):
+                            with html.Div(key=B("t.key"), style={"margin": "4px 0"}):
+                                html.Span([B("t.tool")], style={"fontWeight": 600, "marginRight": "6px"})
+                                html.Span([B("t.where"), B("t.message")])
                 with react.If(value="rv_findings.length"):
                     with html.Details(style={"marginTop": "8px", "fontSize": "0.8rem"}):
                         html.Summary([B("'Static checks (' + rv_findings.length + ')'")],

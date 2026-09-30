@@ -128,10 +128,17 @@ def chat(model, system, user, num_ctx=16384):
     return {"comments": []}
 
 
-def load_rules(path="data/rules_verified.json"):
+def load_rules(path="data/rules_verified.json", confidence="data/rules_confidence.json", skip_automated=True):
+    """Mined rules numbered in file order; rules a tool already enforces are left to the tool."""
     rules = json.loads(Path(path).read_text())["rules"]
     for i, r in enumerate(rules, 1):
         r.setdefault("id", f"R{i:03d}")
+    conf_path = Path(confidence)
+    if skip_automated and conf_path.exists():
+        from hashlib import sha1
+        conf = json.loads(conf_path.read_text())["rules"]
+        key = lambda r: sha1("|".join(sorted(r["members"])).encode()).hexdigest()[:12]
+        rules = [r for r in rules if not conf.get(key(r), {}).get("automated")]
     return rules
 
 

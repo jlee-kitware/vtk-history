@@ -23,6 +23,9 @@ python3 -u deprecations/check_rules.py
 step "documented rules"
 python3 -u rules/doc_rules.py
 python3 -u rules/doc_match.py
+step "tool rules"
+python3 -u rules/tool_rules.py
+python3 -u rules/doc_match.py --source tool
 python3 -u rules/confidence.py
 step "reviewer expertise"
 python3 -u people/expertise.py build

@@ -73,13 +73,16 @@ class Store:
                          "decision": c.get("decision", "undecided"), "mixed": bool(r.get("counter_examples")),
                          "deprecated": bool(r["conflicts"]), "level": conf.get("level", "medium"),
                          "score": conf.get("score", 0), "reason": conf.get("reason", ""),
-                         "guide_conflict": (conf.get("doc") or {}).get("verdict") == "contradicts"})
+                         "guide_conflict": (conf.get("doc") or {}).get("verdict") == "contradicts"
+                         or (conf.get("tool") or {}).get("verdict") == "contradicts",
+                         "automated": conf.get("automated", False),
+                         "automatable": bool(conf.get("automatable"))})
         for d in self.doc_rules:
             c = self.curated.get(d["key"], {})
             rows.append({"id": d["id"], "key": d["key"], "rule": c.get("rule") or d["rule"], "topic": "developer guide",
                          "mrs": 0, "reviewers": 0, "last": "", "decision": c.get("decision", "undecided"),
                          "mixed": False, "deprecated": False, "level": "documented", "score": 0,
-                         "guide_conflict": False,
+                         "guide_conflict": False, "automated": False, "automatable": False,
                          "reason": f"Stated in the developer guide ({d['file']}, {d['section'] or 'top'}); "
                                    "not raised in the reviews we mined"})
         rank = {"high": 0, "medium": 1, "low": 2, "documented": 3}
@@ -147,6 +150,16 @@ class Store:
             rows.append(("Developer guide", f"Conflicts with {doc['file']}: \u201c{doc['quote']}\u201d "
                                             f"({doc['why']}) Decide whether the rule is wrong or stated too broadly.",
                          p.get("documented", 0)))
+        tool, auto = conf.get("tool"), conf.get("automatable")
+        if tool and tool["verdict"] == "same":
+            rows.append(("Tools", f"Enforced by {tool['tool']} ({tool['check']}): {tool['evidence']}. The agent "
+                                  "leaves this to the tool.", p.get("tools", 0)))
+        elif tool:
+            rows.append(("Tools", f"Conflicts with {tool['tool']} ({tool['check']}: {tool['evidence']}): "
+                                  f"{tool['why']}", p.get("tools", 0)))
+        if auto:
+            rows.append(("Could automate", f"clang-tidy check {auto['check']} would enforce this; VTK has it off. "
+                                           f"{auto['rule']}", None))
         if conf["deprecated_api"]:
             rows.append(("Deprecated APIs", "Names an API VTK has deprecated or removed, so the level is low", None))
         return [{"name": n, "detail": d, "points": "" if v is None else f"{v:+d}",

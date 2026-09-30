@@ -141,7 +141,8 @@ class Reviews:
             record = json.loads(Path(f).read_text())
             out.append({"label": label, "file": f, "model": record.get("model") or label.split("/")[-1],
                         "predictions": record["predictions"], "trace": record.get("trace") or [],
-                        "findings": record.get("findings") or []})
+                        "findings": record.get("findings") or [],
+                        "tool_findings": record.get("tool_findings") or []})
         return out
 
     def reviewed_mrs(self):
@@ -175,7 +176,8 @@ class Reviews:
         stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M")
         record = {"mr": iid, "base": base, "head": head, "model": model, "until": until, "hunks": hunks,
                   "drafted": drafted, "predictions": predictions, "trace": reviewer.trace,
-                  "findings": reviewer.findings, "at": stamp}
+                  "findings": reviewer.findings, "tool_findings": getattr(reviewer, "tool_findings", []),
+                  "at": stamp}
         out = ROOT / "data/reviews" / f"{iid}-{head[:12]}-{model.replace(':', '_')}-{stamp}.json"
         out.parent.mkdir(parents=True, exist_ok=True)
         out.write_text(json.dumps(record, indent=1, ensure_ascii=False))
