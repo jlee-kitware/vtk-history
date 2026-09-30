@@ -8,6 +8,8 @@ Factors:
   objections     counter-examples as a share of support, and whether any is newer than the latest support
   consistency    whether verification found the supporting comments agree
   deprecations   a rule naming an API VTK has deprecated or removed is low regardless of the rest
+  developer guide a rule the guide states gains two points; one it contradicts is low
+                 (from data/doc_match.json, made by rules/doc_rules.py and rules/doc_match.py)
 
 Writes data/rules_confidence.json keyed by rule key.
 
@@ -38,7 +40,7 @@ def load_examples():
     return out
 
 
-def score(rule, examples, baseline, conflicted):
+def score(rule, examples, baseline, conflicted, doc=None):
     lines = [examples[m] for m in rule["members"] if m in examples and examples[m][0] == "line"]
     acted = sum(a for _, a in lines)
     follow = acted / len(lines) if len(lines) >= MIN_LINES else None
@@ -56,8 +58,10 @@ def score(rule, examples, baseline, conflicted):
     points["objections"] = -2 if share >= 0.25 and len(counter) >= 2 else -1 if share >= 0.1 else 0
     points["newer_objection"] = -1 if newer else 0
     points["consistency"] = 0 if rule.get("consistent", True) else -1
+    points["documented"] = 2 if doc and doc["verdict"] == "same" else 0
+    contradicted = bool(doc and doc["verdict"] == "contradicts")
     total = sum(points.values())
-    level = "low" if conflicted or total <= 0 else "high" if total >= 3 else "medium"
+    level = "low" if conflicted or contradicted or total <= 0 else "high" if total >= 3 else "medium"
 
     parts = [f"{rule['support_mrs']} MRs", f"{reviewers} reviewers"]
     parts.append(f"authors changed the code {follow:.0%} of the time ({acted} of {len(lines)})" if follow is not None
@@ -69,10 +73,22 @@ def score(rule, examples, baseline, conflicted):
         parts.append("some supporting comments differ")
     if conflicted:
         parts.append("names a deprecated or removed API")
+    if doc:
+        parts.append(("stated in " if doc["verdict"] == "same" else "contradicts ") + f"the developer guide ({doc['file']})")
     return {"level": level, "score": total, "points": points, "reason": ", ".join(parts),
             "follow": None if follow is None else round(follow, 3), "line_comments": len(lines), "acted": acted,
             "reviewers": reviewers, "objections": len(counter), "objection_share": round(share, 3),
-            "newer_objection": newer, "consistent": rule.get("consistent", True), "deprecated_api": conflicted}
+            "newer_objection": newer, "consistent": rule.get("consistent", True), "deprecated_api": conflicted,
+            "doc": doc}
+
+
+def load_doc_matches():
+    match_path, rules_path = ROOT / "data/doc_match.json", ROOT / "data/doc_rules.json"
+    if not match_path.exists() or not rules_path.exists():
+        return {}
+    docs = {d["id"]: d for d in json.loads(rules_path.read_text())["rules"]}
+    return {key: dict(m, **{k: docs[m["doc"]][k] for k in ("rule", "quote", "file", "section", "url")})
+            for key, m in json.loads(match_path.read_text())["matches"].items()}
 
 
 def main():
@@ -81,9 +97,11 @@ def main():
     line_flags = [a for k, a in examples.values() if k == "line"]
     baseline = sum(line_flags) / len(line_flags)
     by_symbol = load_index(ROOT / "data/deprecations/index.jsonl")
+    docs = load_doc_matches()
     out = {}
     for r in rules:
-        out[rule_key(r)] = score(r, examples, baseline, bool(conflicts(r, by_symbol, "/home/jlee/gitsync/vtk")))
+        key = rule_key(r)
+        out[key] = score(r, examples, baseline, bool(conflicts(r, by_symbol, "/home/jlee/gitsync/vtk")), docs.get(key))
     (ROOT / "data/rules_confidence.json").write_text(json.dumps(
         {"baseline_follow": round(baseline, 3), "line_comments": len(line_flags), "rules": out}, indent=1))
     levels = {lv: sum(v["level"] == lv for v in out.values()) for lv in ("high", "medium", "low")}

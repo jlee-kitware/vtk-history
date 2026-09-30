@@ -1,0 +1,20 @@
+[
+ {"mined": "Use `this->` prefix for all member variable and method access.",
+  "doc": "Use `this->` inside of methods to access class methods and instance variables.", "verdict": "same"},
+ {"mined": "Use curly braces for all control flow blocks, including if, else, for, and while statements, even when they contain a single statement.",
+  "doc": "Conditional clauses (including loop conditionals such as for and while) must be in braces below the conditional.", "verdict": "same"},
+ {"mined": "Declare loop counters as unsigned int.",
+  "doc": "(Prohibited) When iterating in integer space. `for (auto i=0; i < grid->GetNumberOfPoints(); ++i)`. Because vtk data structures usually contain more than 2 billion elements, iterating using 32bit integer is prohibited in these use case (and often doesn't match the type used).", "verdict": "contradicts"},
+ {"mined": "Use vtkNew for VTK object creation to avoid manual memory management and ensure proper reference counting.",
+  "doc": "Prefer the use of vtkNew when the variable would be classically treated as a stack variable.", "verdict": "same"},
+ {"mined": "Squash all commits into logical or a single commit before merging.",
+  "doc": "No trailing whitespace", "verdict": "unrelated"},
+ {"mined": "Use const reference for function parameters to avoid copying.",
+  "doc": "Prefer overloading functions to default arguments.", "verdict": "unrelated"},
+ {"mined": "Use = default for special member functions in the class definition.",
+  "doc": "The use of default is encouraged in preference to empty destructor implementations", "verdict": "same"},
+ {"mined": "Use std::unique_ptr to manage ownership of VTK objects.",
+  "doc": "Do not use unique_ptr with vtk-derived objects. We recommend using `vtkNew` because VTK objects have their own internal reference counting and custom deletion logic, making unique_ptr's ownership semantics invalid.", "verdict": "contradicts"},
+ {"mined": "Document public methods with doxygen comments that describe the default value of ivars.",
+  "doc": "Public methods must be documented with doxygen markup.", "verdict": "related"}
+]

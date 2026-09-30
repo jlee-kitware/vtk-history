@@ -18,6 +18,7 @@ Usage:
 
 import asyncio
 import sys
+from datetime import datetime
 from pathlib import Path
 from urllib.parse import quote
 
@@ -30,11 +31,15 @@ from charts import line_svg  # noqa: E402
 from data import DECISIONS, Store  # noqa: E402
 from review_data import Reviews, comment_key  # noqa: E402
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "people"))
+from expertise import Expertise, reason  # noqa: E402
+
 B, C = react.Bind, react.Callback
 server = get_server(client_type="react")
 state, ctrl = server.state, server.controller
 store = Store()
 reviews = Reviews()
+expertise = Expertise()
 
 CANVAS, SURFACE, INK, MUTED, LINE = "#F3F5F8", "#FFFFFF", "#172033", "#5A6474", "#DCE1E8"
 ACCENT, ACCENT_TINT, REVIEWER = "#0A7C8C", "#E3F2F4", "#8A94A6"
@@ -66,8 +71,8 @@ THEME = {
             "backgroundColor": ACCENT_TINT}}}},
     },
 }
-LEVEL_FG = "({high: '#1A7F37', medium: '#8A5A00', low: '#B42339'})"
-LEVEL_BG = "({high: '#E6F4EA', medium: '#FFF3D6', low: '#FCE8EC'})"
+LEVEL_FG = "({high: '#1A7F37', documented: '#0B5C75', medium: '#8A5A00', low: '#B42339'})"
+LEVEL_BG = "({high: '#E6F4EA', documented: '#E1F0F6', medium: '#FFF3D6', low: '#FCE8EC'})"
 TONE = "({good: '#1A7F37', bad: '#B42339', neutral: '" + MUTED + "'})"
 DECISION_COLOR = {"accepted": "success", "edited": "primary", "rejected": "error", "undecided": "default"}
 TABS = [("review", "Review"), ("rules", "Rules"), ("deprecations", "Deprecations"), ("trends", "Trends"),
@@ -84,7 +89,8 @@ state.update({
     "rule_rows": [], "rule_search": "", "rule_topic": "", "rule_decision": "", "rule_level": "",
     "topics": options(sorted({r["topic"] for r in store.rules})),
     "decisions": options(["undecided", *DECISIONS]),
-    "levels": [{"title": "High", "value": "high"}, {"title": "Medium", "value": "medium"},
+    "levels": [{"title": "High", "value": "high"}, {"title": "Documented only", "value": "documented"},
+               {"title": "Medium", "value": "medium"},
                {"title": "Low", "value": "low"}],
     "rule_key": None, "rule": None, "rule_text": "", "rule_note": "", "rule_counts": "", "rule_shown": "",
     "dep_rows": [], "dep_search": "", "dep_outcome": "", "dep_shown": "",
@@ -159,8 +165,10 @@ def table(height):
 def refresh_rules():
     rows = store.rule_rows()
     levels = {lv: sum(r["level"] == lv for r in rows) for lv in ("high", "medium", "low")}
+    documented = sum(r["level"] == "documented" for r in rows)
     counts = {d: sum(r["decision"] == d for r in rows) for d in ["undecided", *DECISIONS]}
-    state.rule_counts = (", ".join(f"{n} {lv}" for lv, n in levels.items()) + " confidence; "
+    state.rule_counts = (", ".join(f"{n} {lv}" for lv, n in levels.items())
+                         + f" confidence, {documented} from the developer guide only; "
                          + ", ".join(f"{n} {d}" for d, n in counts.items()))
     if state.rule_topic:
         rows = [r for r in rows if r["topic"] == state.rule_topic]
@@ -241,6 +249,9 @@ def confidence_panel():
         with html.Div(style={"display": "flex", "alignItems": "center", "gap": "8px", "marginBottom": "6px"}):
             html.Span("Confidence", style={"fontWeight": 600})
             level_pill("rule.level")
+            html.Div(style={"flex": "1"})
+            with react.If(value="rule.doc_url"):
+                link("'Open ' + rule.doc_file", "rule.doc_url")
         with react.For(items="rule.confidence", name="f"):
             with html.Div(key=B("f.name"), style={"display": "flex", "gap": "10px", "padding": "3px 0",
                                                   "borderTop": f"1px solid {LINE}"}):
@@ -480,7 +491,8 @@ state.update({"rv_iid": "", "rv_mr": None, "rv_revisions": [], "rv_rev": None, "
               "rv_files": [], "rv_file": None, "rv_rows": [], "rv_outside": [], "rv_findings": [], "rv_trace": [],
               "rv_models": options(["qwen3-coder-next:q4_K_M", "gpt-oss:120b"]),
               "rv_model": "qwen3-coder-next:q4_K_M", "rv_running": False, "rv_status": "",
-              "rv_summary": reviews.summary(), "rv_note": "", "rv_queue": reviews.reviewed_mrs(), "rv_pick": None})
+              "rv_summary": reviews.summary(), "rv_note": "", "rv_queue": reviews.reviewed_mrs(), "rv_pick": None, "rv_suggest": [],
+              "rv_suggest_note": ""})
 
 
 @state.change("rv_pick")
@@ -532,8 +544,21 @@ def on_revision(rv_rev, **_):
         return
     REV["files"] = files
     REV["reviewers"] = reviews.reviewer_comments(REV["record"], rev["head"])
+    suggest_reviewers()
     load_runs()
     state.rv_status = ""
+
+
+def suggest_reviewers():
+    mr = REV["record"]["merge_request"]
+    is_open = mr["state"] == "opened"
+    at = datetime.now().isoformat()[:19] if is_open else mr["created_at"][:19]
+    actual = {n["author"]["username"] for d in REV["record"].get("discussions") or [] for n in d["notes"]}
+    picks = expertise.suggest([f["path"] for f in REV["files"]], at, exclude={mr["author"]["username"]}, top=5)
+    state.rv_suggest = [{"user": s["user"], "reason": reason(s), "reviewed": s["user"] in actual} for s in picks]
+    state.rv_suggest_note = ("Ranked from who reviewed and wrote these files, weighted to recent work; only people "
+                             "active in the last six months. " + ("" if is_open else
+                             "Uses history up to when this MR was opened; a check mark means they did review it."))
 
 
 def load_runs(select_file=None):
@@ -676,6 +701,23 @@ def people_cards(items):
                         html.Span([B("r.body")], style={"whiteSpace": "pre-wrap", "color": "#2E3A4F"})
 
 
+def reviewer_panel():
+    with react.If(value="rv_suggest.length"):
+        with html.Details(open=True, style={"marginBottom": "8px", "padding": "8px 10px", "background": SURFACE,
+                                            "border": f"1px solid {LINE}", "borderRadius": "8px", "fontSize": "0.84rem"}):
+            html.Summary("Suggested reviewers", style={"cursor": "pointer", "fontWeight": 600})
+            with react.For(items="rv_suggest", name="s"):
+                with html.Div(key=B("s.user"), style={"marginTop": "6px"}):
+                    with html.Div(style={"display": "flex", "alignItems": "center", "gap": "6px"}):
+                        html.Span([B("s.user")], style={"fontWeight": 600})
+                        with react.If(value="s.reviewed"):
+                            html.Span("reviewed it", style={"fontSize": "0.72rem", "color": "#1A7F37",
+                                                            "background": "#E6F4EA", "borderRadius": "8px",
+                                                            "padding": "0 6px"})
+                    html.Div([B("s.reason")], style={"color": MUTED, "fontSize": "0.76rem"})
+            html.Div([B("rv_suggest_note")], style={"color": MUTED, "fontSize": "0.72rem", "marginTop": "6px"})
+
+
 def review_view():
     with bar():
         field("MR number", "rv_iid", 120, on_enter=mr_key)
@@ -703,6 +745,7 @@ def review_view():
     with react.If(value="rv_mr"):
         with mui.Box(style={"display": "flex", "gap": "12px"}):
             with mui.Box(style={"width": "25%", "minWidth": 0}):
+                reviewer_panel()
                 with mui.List(dense=True, style={"maxHeight": "calc(100vh - 360px)", "overflowY": "auto"}):
                     with react.For(items="rv_files", name="f"):
                         with mui.ListItemButton(key=B("f.path"), selected=B("f.path === rv_file"),

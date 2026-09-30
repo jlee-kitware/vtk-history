@@ -20,7 +20,12 @@ python3 -u label/label_reviews.py
 step "deprecation index"
 python3 -u deprecations/build_index.py
 python3 -u deprecations/check_rules.py
+step "documented rules"
+python3 -u rules/doc_rules.py
+python3 -u rules/doc_match.py
 python3 -u rules/confidence.py
+step "reviewer expertise"
+python3 -u people/expertise.py build
 step "term trends"
 python3 -u trends/discover_terms.py --out data/trends/terms-v2
 step "search index"

@@ -45,6 +45,9 @@ class Store:
         confidence = self._json("data/rules_confidence.json") or {"rules": {}}
         self.confidence = confidence["rules"]
         self.baseline_follow = confidence.get("baseline_follow")
+        docs = (self._json("data/doc_rules.json") or {"rules": []})["rules"]
+        doc_only = set((self._json("data/doc_match.json") or {"doc_only": []})["doc_only"])
+        self.doc_rules = [dict(d, key=f"doc-{d['id']}") for d in docs if d["id"] in doc_only]
         self.terms = self._json("data/trends/terms-v2/terms.json")
         self.themes = self._json("data/trends/k250/themes.json")
         self._index = None
@@ -70,10 +73,34 @@ class Store:
                          "decision": c.get("decision", "undecided"), "mixed": bool(r.get("counter_examples")),
                          "deprecated": bool(r["conflicts"]), "level": conf.get("level", "medium"),
                          "score": conf.get("score", 0), "reason": conf.get("reason", "")})
-        rank = {"high": 0, "medium": 1, "low": 2}
+        for d in self.doc_rules:
+            c = self.curated.get(d["key"], {})
+            rows.append({"id": d["id"], "key": d["key"], "rule": c.get("rule") or d["rule"], "topic": "developer guide",
+                         "mrs": 0, "reviewers": 0, "last": "", "decision": c.get("decision", "undecided"),
+                         "mixed": False, "deprecated": False, "level": "documented", "score": 0,
+                         "reason": f"Stated in the developer guide ({d['file']}, {d['section'] or 'top'}); "
+                                   "not raised in the reviews we mined"})
+        rank = {"high": 0, "documented": 1, "medium": 2, "low": 3}
         return sorted(rows, key=lambda x: (rank[x["level"]], -x["score"], -x["mrs"]))
 
+    def doc_detail(self, d):
+        c = self.curated.get(d["key"], {})
+        return {
+            "confidence": [{"name": "Developer guide", "detail": f"\u201c{d['quote']}\u201d", "points": "",
+                            "tone": "good"}],
+            "level": "documented", "reason": "", "id": d["id"], "key": d["key"], "draft": d["rule"],
+            "rule": c.get("rule") or d["rule"], "rationale": "", "topic": "developer guide",
+            "scope": f"{d['file']}, {d['section'] or 'top'} ({'required' if d['strength'] == 'must' else 'preferred'})",
+            "support": "Stated in the VTK developer guide; no review comments found for it",
+            "reviewers": "", "examples": [], "counter": [], "conflicts": [], "doc_url": d["url"],
+            "doc_file": d["file"], "decision": c.get("decision", "undecided"), "note": c.get("note", ""),
+            "decided_by": c.get("by", ""), "decided_at": c.get("at", ""),
+        }
+
     def rule_detail(self, key):
+        d = next((x for x in self.doc_rules if x["key"] == key), None)
+        if d:
+            return self.doc_detail(d)
         r = next((x for x in self.rules if x["key"] == key), None)
         if not r:
             return None
@@ -90,6 +117,7 @@ class Store:
             "reviewers": ", ".join(f"{n} ({k})" for n, k in r["reviewers"][:6]),
             "examples": evidence(r["examples"]), "counter": evidence(r.get("counter_examples") or []),
             "conflicts": [self.deprecation_row(d) for d in r["conflicts"]],
+            "doc_url": (conf.get("doc") or {}).get("url"), "doc_file": (conf.get("doc") or {}).get("file"),
             "decision": c.get("decision", "undecided"), "note": c.get("note", ""),
             "decided_by": c.get("by", ""), "decided_at": c.get("at", ""),
         }
@@ -110,13 +138,20 @@ class Store:
             ("Consistency", "Supporting comments agree" if conf["consistent"]
              else "Verification found some supporting comments that differ", p["consistency"]),
         ]
+        doc = conf.get("doc")
+        if doc and doc["verdict"] == "same":
+            rows.append(("Developer guide", f"Stated in {doc['file']}: \u201c{doc['quote']}\u201d", p.get("documented", 0)))
+        elif doc:
+            rows.append(("Developer guide", f"Contradicts {doc['file']}, so the level is low: \u201c{doc['quote']}\u201d "
+                                            f"({doc['why']})", None))
         if conf["deprecated_api"]:
             rows.append(("Deprecated APIs", "Names an API VTK has deprecated or removed, so the level is low", None))
         return [{"name": n, "detail": d, "points": "" if v is None else f"{v:+d}",
                  "tone": "neutral" if not v else "good" if v > 0 else "bad"} for n, d, v in rows]
 
     def decide(self, key, decision, rule_text, note, who=None):
-        r = next(x for x in self.rules if x["key"] == key)
+        r = next((x for x in self.rules if x["key"] == key), None) or next(
+            dict(x, topic="developer guide", scope=x["file"], support_mrs=0) for x in self.doc_rules if x["key"] == key)
         if decision == "undecided":
             self.curated.pop(key, None)
         else:
