@@ -8,7 +8,8 @@ Factors:
   objections     counter-examples as a share of support, and whether any is newer than the latest support
   consistency    whether verification found the supporting comments agree
   deprecations   a rule naming an API VTK has deprecated or removed is low regardless of the rest
-  developer guide a rule the guide states gains two points; one it contradicts is low
+  developer guide a rule the guide states gains two points; one it contradicts loses two and is flagged
+                 (often the mined rule is stated too broadly rather than wrong)
                  (from data/doc_match.json, made by rules/doc_rules.py and rules/doc_match.py)
 
 Writes data/rules_confidence.json keyed by rule key.
@@ -58,10 +59,9 @@ def score(rule, examples, baseline, conflicted, doc=None):
     points["objections"] = -2 if share >= 0.25 and len(counter) >= 2 else -1 if share >= 0.1 else 0
     points["newer_objection"] = -1 if newer else 0
     points["consistency"] = 0 if rule.get("consistent", True) else -1
-    points["documented"] = 2 if doc and doc["verdict"] == "same" else 0
-    contradicted = bool(doc and doc["verdict"] == "contradicts")
+    points["documented"] = 0 if not doc else 2 if doc["verdict"] == "same" else -2
     total = sum(points.values())
-    level = "low" if conflicted or contradicted or total <= 0 else "high" if total >= 3 else "medium"
+    level = "low" if conflicted or total <= 0 else "high" if total >= 3 else "medium"
 
     parts = [f"{rule['support_mrs']} MRs", f"{reviewers} reviewers"]
     parts.append(f"authors changed the code {follow:.0%} of the time ({acted} of {len(lines)})" if follow is not None

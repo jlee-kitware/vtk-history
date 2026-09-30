@@ -89,9 +89,9 @@ state.update({
     "rule_rows": [], "rule_search": "", "rule_topic": "", "rule_decision": "", "rule_level": "",
     "topics": options(sorted({r["topic"] for r in store.rules})),
     "decisions": options(["undecided", *DECISIONS]),
-    "levels": [{"title": "High", "value": "high"}, {"title": "Documented only", "value": "documented"},
-               {"title": "Medium", "value": "medium"},
-               {"title": "Low", "value": "low"}],
+    "levels": [{"title": "High", "value": "high"}, {"title": "Medium", "value": "medium"},
+               {"title": "Low", "value": "low"}, {"title": "Conflicts with the guide", "value": "conflict"},
+               {"title": "Documented only", "value": "documented"}],
     "rule_key": None, "rule": None, "rule_text": "", "rule_note": "", "rule_counts": "", "rule_shown": "",
     "dep_rows": [], "dep_search": "", "dep_outcome": "", "dep_shown": "",
     "outcomes": options(["present", "removed", "undeprecated"]),
@@ -174,7 +174,9 @@ def refresh_rules():
         rows = [r for r in rows if r["topic"] == state.rule_topic]
     if state.rule_decision:
         rows = [r for r in rows if r["decision"] == state.rule_decision]
-    if state.rule_level:
+    if state.rule_level == "conflict":
+        rows = [r for r in rows if r["guide_conflict"]]
+    elif state.rule_level:
         rows = [r for r in rows if r["level"] == state.rule_level]
     needle = (state.rule_search or "").lower().strip()
     if needle:
@@ -222,6 +224,9 @@ def rules_view():
                             mui.TableCell([B("r.id")], style={"color": ACCENT, "fontWeight": 500})
                             with mui.TableCell():
                                 level_pill("r.level")
+                                with react.If(value="r.guide_conflict"):
+                                    html.Div("conflicts with guide", style={"fontSize": "0.7rem", "color": "#B42339",
+                                                                            "marginTop": "4px"})
                             with mui.TableCell():
                                 html.Div([B("r.rule")])
                                 html.Div([B("r.reason")], style={"color": MUTED, "fontSize": "0.76rem",
