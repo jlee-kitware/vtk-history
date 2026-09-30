@@ -214,7 +214,7 @@ class Reviewer:
         for c in candidates:
             if not any(same(u, c) for u in unique):
                 unique.append(c)
-        kept = [c for c in unique if (c["path"], c["line"]) in verified]
+        kept = list({(c["path"], c["line"]): c for c in reversed(unique) if (c["path"], c["line"]) in verified}.values())[::-1]
         unique = [c for c in unique if (c["path"], c["line"]) not in verified]
         if len(unique) <= k:
             return kept + unique
