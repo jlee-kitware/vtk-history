@@ -23,11 +23,13 @@ import json
 import random
 import sys
 import time
+import urllib.request
 from collections import Counter, defaultdict
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from review import Reviewer, load_rules, chat  # noqa: E402
+from review import HOST, Reviewer, load_rules, chat  # noqa: E402
+from tool_review import ToolReviewer  # noqa: E402
 
 JUDGE_SYSTEM = "You compare code review comments. Reply with JSON only."
 JUDGE_USER = """Two review comments on the same place in a VTK merge request.
@@ -59,6 +61,13 @@ def safe_rules(rules_path, examples_path, benchmark_iids, min_mrs=3):
 def same_concern(judge, answer, prediction):
     out = chat(judge, JUDGE_SYSTEM, JUDGE_USER.format(answer=answer[:1200], prediction=prediction[:1200]), num_ctx=4096)
     return bool(out.get("same"))
+
+
+def unload(model):
+    """Free a model's memory so the next large model fits on the Spark."""
+    req = urllib.request.Request(HOST + "/api/generate", json.dumps({"model": model, "keep_alive": 0}).encode(),
+                                 {"Content-Type": "application/json"})
+    urllib.request.urlopen(req, timeout=120).read()
 
 
 def check_judge(judge, max_misses=1):
@@ -99,6 +108,8 @@ def main():
     p.add_argument("--seed", type=int, default=11)
     p.add_argument("--window", type=int, default=5)
     p.add_argument("--out", default="data/benchmark/runs")
+    p.add_argument("--agent", choices=["hunk", "tool"], default="hunk",
+                   help="hunk: one hunk at a time (review.py); tool: whole MR with tools (tool_review.py)")
     args = p.parse_args()
 
     bench = [json.loads(line) for line in open(args.benchmark)]
@@ -108,24 +119,37 @@ def main():
     rules = safe_rules(args.rules, args.examples, iids)
     print(f"{len(bench)} MRs; {len(rules)} rules usable without benchmark evidence", flush=True)
     check_judge(args.judge)
+    if args.model != args.judge:
+        unload(args.judge)
 
-    out = Path(args.out) / args.model.replace(":", "_").replace("/", "_")
+    out = Path(args.out) / (args.model.replace(":", "_").replace("/", "_") + ("-tool" if args.agent == "tool" else ""))
     out.mkdir(parents=True, exist_ok=True)
-    reviewer = Reviewer(args.repo, args.model, rules=rules)
-    totals = defaultdict(Counter)
+    reviewer = (ToolReviewer if args.agent == "tool" else Reviewer)(args.repo, args.model, rules=rules)
     for n, mr in enumerate(bench, 1):
         iid = mr["mr"]["iid"]
         cache = out / f"{iid}.json"
         if cache.exists():
-            record = json.loads(cache.read_text())
-        else:
-            until = min(a["created_at"] for a in mr["answers"])[:10]
-            start = time.time()
-            predictions, hunks, drafted = reviewer.review(mr["base_sha"], mr["head_sha"], mr["mr"]["title"], until,
-                                                          exclude_ref=f"!{iid}")
-            record = {"mr": mr["mr"], "until": until, "hunks": hunks, "drafted": drafted,
-                      "seconds": round(time.time() - start), "predictions": predictions}
-            record["score"] = score(mr, predictions, args.judge, args.window)
+            continue
+        until = min(a["created_at"] for a in mr["answers"])[:10]
+        start = time.time()
+        predictions, hunks, drafted = reviewer.review(mr["base_sha"], mr["head_sha"], mr["mr"]["title"], until,
+                                                      exclude_ref=f"!{iid}")
+        record = {"mr": mr["mr"], "until": until, "hunks": hunks, "drafted": drafted,
+                  "seconds": round(time.time() - start), "predictions": predictions,
+                  "trace": getattr(reviewer, "trace", None), "score": None}
+        cache.write_text(json.dumps(record, indent=1, ensure_ascii=False))
+        print(f"[{n}/{len(bench)}] !{iid}: {len(predictions)} comments kept of {drafted} on {hunks} hunks "
+              f"in {record['seconds']}s", flush=True)
+
+    if args.model != args.judge:
+        unload(args.model)
+    totals = defaultdict(Counter)
+    for n, mr in enumerate(bench, 1):
+        iid = mr["mr"]["iid"]
+        cache = out / f"{iid}.json"
+        record = json.loads(cache.read_text())
+        if record.get("score") is None:
+            record["score"] = score(mr, record["predictions"], args.judge, args.window)
             cache.write_text(json.dumps(record, indent=1, ensure_ascii=False))
         s = record["score"]
         t = totals["all"]
@@ -142,8 +166,7 @@ def main():
         for a in s["answers"]:
             totals["topic_answers"][a["topic"]] += 1
             totals["topic_matched"][a["topic"]] += a["matched"]
-        print(f"[{n}/{len(bench)}] !{iid}: {len(record['predictions'])} comments on {record['hunks']} hunks in "
-              f"{record['seconds']}s; answers matched {sum(a['matched'] for a in s['answers'])}/{len(s['answers'])}",
+        print(f"scored !{iid}: answers matched {sum(a['matched'] for a in s['answers'])}/{len(s['answers'])}",
               flush=True)
 
     t = totals["all"]
