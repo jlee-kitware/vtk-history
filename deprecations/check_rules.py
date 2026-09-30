@@ -33,6 +33,36 @@ def headers_declaring(repo, symbol):
     return len(r.stdout.splitlines())
 
 
+def load_index(path):
+    by_symbol = defaultdict(list)
+    for line in open(path):
+        rec = json.loads(line)
+        by_symbol[rec["symbol"]].append(rec)
+    return by_symbol
+
+
+def conflicts(rule, by_symbol, repo):
+    """Deprecation records for the APIs a rule names, oldest first, one per class, symbol, and version."""
+    text = " ".join([rule.get("rule") or "", rule.get("rationale") or ""] + [e["evidence"] for e in rule["examples"]])
+    idents = set(IDENT.findall(text))
+    hits = []
+    for sym in idents & by_symbol.keys():
+        if not CODE_SHAPED.search(sym):
+            continue
+        recs = by_symbol[sym]
+        named = [rec for rec in recs if rec["class"] in idents]
+        policy = max(Counter(rec["deprecated"]["sha"] for rec in recs).values()) >= 2
+        if named or policy or headers_declaring(repo, sym) <= 3:
+            hits += named or recs
+    seen, unique = set(), []
+    for rec in sorted(hits, key=lambda x: x["deprecated"]["date"]):
+        key = (rec["class"], rec["symbol"], rec["version"])
+        if key not in seen:
+            seen.add(key)
+            unique.append(rec)
+    return unique
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--rules", default="data/rules_verified.json")
@@ -41,10 +71,7 @@ def main():
     p.add_argument("--repo", default="/home/jlee/gitsync/vtk")
     args = p.parse_args()
 
-    by_symbol = defaultdict(list)
-    for line in open(args.index):
-        rec = json.loads(line)
-        by_symbol[rec["symbol"]].append(rec)
+    by_symbol = load_index(args.index)
     rules = json.loads(Path(args.rules).read_text())["rules"]
     for i, r in enumerate(rules, 1):
         r.setdefault("id", f"R{i:03d}")
@@ -54,29 +81,13 @@ def main():
              "A rule whose last supporting comment predates the deprecation may recommend what VTK now discourages.", ""]
     flagged = 0
     for r in rules:
-        text = " ".join([r.get("rule") or "", r.get("rationale") or ""] + [e["evidence"] for e in r["examples"]])
-        idents = set(IDENT.findall(text))
-        hits = []
-        for sym in idents & by_symbol.keys():
-            if not CODE_SHAPED.search(sym):
-                continue
-            recs = by_symbol[sym]
-            named = [rec for rec in recs if rec["class"] in idents]
-            per_mr = Counter(rec["deprecated"]["sha"] for rec in recs)
-            policy = max(per_mr.values()) >= 2
-            if named or policy or headers_declaring(args.repo, sym) <= 3:
-                hits += named or recs
+        hits = conflicts(r, by_symbol, args.repo)
         if not hits:
             continue
         flagged += 1
         lines += [f"## {r['id']}: {r['rule']}", "",
                   f"Rule evidence: {r['first_seen']} to {r['last_seen']}, {r['support_mrs']} MRs.", ""]
-        seen = set()
-        for rec in sorted(hits, key=lambda x: x["deprecated"]["date"]):
-            key = (rec["class"], rec["symbol"], rec["version"])
-            if key in seen:
-                continue
-            seen.add(key)
+        for rec in hits:
             dep = rec["deprecated"]
             when = f"deprecated in {rec['version']} on {dep['date']}" + (f" by !{dep['mr']}" if dep["mr"] else "")
             if rec["removed"]:
