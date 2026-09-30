@@ -21,7 +21,7 @@ from pathlib import Path
 from urllib.parse import quote
 
 from trame.app import get_server
-from trame.ui.mui import SinglePageLayout
+from trame.ui.mui import MuiLayout
 from trame.widgets import html, mui, react
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -35,8 +35,36 @@ state, ctrl = server.state, server.controller
 store = Store()
 reviews = Reviews()
 
-MONO = "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace"
-MUTED = "rgba(0, 0, 0, 0.6)"
+CANVAS, SURFACE, INK, MUTED, LINE = "#F3F5F8", "#FFFFFF", "#172033", "#5A6474", "#DCE1E8"
+ACCENT, ACCENT_TINT, REVIEWER = "#0A7C8C", "#E3F2F4", "#8A94A6"
+SANS = "'IBM Plex Sans', system-ui, -apple-system, 'Segoe UI', sans-serif"
+MONO = "'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace"
+FONTS = ("https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500"
+         "&family=IBM+Plex+Sans:wght@400;500;600&display=swap")
+THEME = {
+    "palette": {"mode": "light", "primary": {"main": ACCENT}, "secondary": {"main": "#6E56CF"},
+                "success": {"main": "#1F883D"}, "error": {"main": "#C4314B"}, "warning": {"main": "#B35900"},
+                "background": {"default": CANVAS, "paper": SURFACE}, "text": {"primary": INK, "secondary": MUTED},
+                "divider": LINE},
+    "typography": {"fontFamily": SANS, "fontSize": 13, "button": {"textTransform": "none", "fontWeight": 500}},
+    "shape": {"borderRadius": 6},
+    "components": {
+        "MuiButton": {"defaultProps": {"disableElevation": True}},
+        "MuiButtonGroup": {"defaultProps": {"disableElevation": True}},
+        "MuiTableCell": {"styleOverrides": {
+            "root": {"borderColor": LINE, "fontSize": "0.84rem"},
+            "head": {"backgroundColor": "#F7F9FB", "color": MUTED, "fontWeight": 600, "fontSize": "0.78rem"}}},
+        "MuiTableRow": {"styleOverrides": {"root": {"&.Mui-selected, &.Mui-selected:hover": {
+            "backgroundColor": ACCENT_TINT}}}},
+        "MuiPaper": {"styleOverrides": {"outlined": {"borderColor": LINE}}},
+        "MuiChip": {"styleOverrides": {"root": {"borderRadius": "6px", "fontWeight": 500},
+                                       "sizeSmall": {"height": "22px"}}},
+        "MuiOutlinedInput": {"styleOverrides": {"root": {"backgroundColor": SURFACE},
+                                                "notchedOutline": {"borderColor": LINE}}},
+        "MuiListItemButton": {"styleOverrides": {"root": {"borderRadius": "6px", "&.Mui-selected": {
+            "backgroundColor": ACCENT_TINT}}}},
+    },
+}
 DECISION_COLOR = {"accepted": "success", "edited": "primary", "rejected": "error", "undecided": "default"}
 TABS = [("review", "Review"), ("rules", "Rules"), ("deprecations", "Deprecations"), ("trends", "Trends"),
         ("search", "Search")]
@@ -69,7 +97,7 @@ def text(expr):
 
 def link(text_expr, url_expr):
     return html.A([B(text_expr)], href=B(url_expr), target="_blank",
-                  style={"color": "#0969da", "textDecoration": "none"})
+                  style={"color": ACCENT, "textDecoration": "none", "fontWeight": 500})
 
 
 def select(label, key, items, width=200, numeric=False, empty=True):
@@ -103,7 +131,7 @@ def bar(**style):
 
 
 def toggle(key, choices):
-    with mui.ButtonGroup(size="small"):
+    with mui.ButtonGroup(size="small", color="primary"):
         for label, value in choices:
             mui.Button(label, variant=B(f"{key} === '{value}' ? 'contained' : 'outlined'"),
                        on_click=C(f"{key} = '{value}'"))
@@ -116,8 +144,8 @@ def head(*columns):
 
 
 def table(height):
-    return mui.TableContainer(style={"maxHeight": f"calc(100vh - {height}px)", "border": "1px solid #d0d7de",
-                                     "borderRadius": "4px"})
+    return mui.TableContainer(style={"maxHeight": f"calc(100vh - {height}px)", "border": f"1px solid {LINE}",
+                                     "borderRadius": "8px", "background": SURFACE})
 
 
 # ----------------------------------------------------------------------------- Rules
@@ -126,7 +154,7 @@ def table(height):
 def refresh_rules():
     rows = store.rule_rows()
     counts = {d: sum(r["decision"] == d for r in rows) for d in ["undecided", *DECISIONS]}
-    state.rule_counts = " · ".join(f"{n} {d}" for d, n in counts.items())
+    state.rule_counts = ", ".join(f"{n} {d}" for d, n in counts.items())
     if state.rule_topic:
         rows = [r for r in rows if r["topic"] == state.rule_topic]
     if state.rule_decision:
@@ -178,7 +206,7 @@ def rules_view():
                     with react.For(items="rule_rows", name="r"):
                         with mui.TableRow(key=B("r.key"), hover=True, selected=B("r.key === rule_key"),
                                           on_click=C("rule_key = r.key"), style={"cursor": "pointer"}):
-                            mui.TableCell([B("r.id")], style={"color": "#0969da"})
+                            mui.TableCell([B("r.id")], style={"color": ACCENT, "fontWeight": 500})
                             mui.TableCell([B("r.rule")])
                             mui.TableCell([B("r.topic")])
                             mui.TableCell([B("r.mrs")])
@@ -204,7 +232,7 @@ def evidence_list(field_name, title, color="inherit"):
                 with html.Div(key=B("e.mr + e.date + e.text.slice(0, 20)"), style={"margin": "8px 0"}):
                     link("'!' + e.mr", "e.url")
                     html.Span([" ", B("e.reviewer"), ", ", B("e.date")], style={"color": MUTED})
-                    html.Div([B("e.text")], style={"paddingLeft": "10px", "borderLeft": "3px solid #d0d7de",
+                    html.Div([B("e.text")], style={"paddingLeft": "10px", "borderLeft": f"3px solid {LINE}",
                                                    "whiteSpace": "pre-wrap"})
 
 
@@ -344,7 +372,7 @@ def trends_view():
                     with react.For(items="trend_rows", name="t"):
                         with mui.TableRow(key=B("t.name"), hover=True, selected=B("t.name === trend_name"),
                                           on_click=C("trend_name = t.name"), style={"cursor": "pointer"}):
-                            mui.TableCell([B("t.name")], style={"color": "#0969da"})
+                            mui.TableCell([B("t.name")], style={"color": ACCENT, "fontWeight": 500})
                             mui.TableCell([B("t.ratio")])
                             mui.TableCell([B("t.docs")])
                             mui.TableCell([B("t.first_seen")])
@@ -420,7 +448,7 @@ def search_view():
 # ----------------------------------------------------------------------------- Review
 
 REV = {"record": None, "revs": [], "files": [], "runs": [], "reviewers": []}
-ROW_BG = {"add": "#e6ffec", "del": "#ffebe9", "hunk": "#ddf4ff", "ctx": "transparent"}
+ROW_BG = {"add": "#E7F6EC", "del": "#FCEBEC", "hunk": "#EEF3FB", "ctx": SURFACE}
 state.update({"rv_iid": "", "rv_mr": None, "rv_revisions": [], "rv_rev": None, "rv_runs": [], "rv_run": None,
               "rv_files": [], "rv_file": None, "rv_rows": [], "rv_outside": [], "rv_findings": [], "rv_trace": [],
               "rv_models": options(["qwen3-coder-next:q4_K_M", "gpt-oss:120b"]),
@@ -502,8 +530,8 @@ def on_run(rv_run, select_file=None, **_):
         agent = sum(p["path"] == f["path"] for p in predictions)
         people = sum(c["path"] == f["path"] for c in REV["reviewers"])
         files.append({"path": f["path"], "name": f["path"].split("/")[-1], "agent": agent, "reviewer": people,
-                      "stats": f"+{f['added']} -{f['removed']}" + (f" · agent {agent}" if agent else "")
-                      + (f" · reviewers {people}" if people else "")})
+                      "stats": f"+{f['added']} -{f['removed']}" + (f", agent {agent}" if agent else "")
+                      + (f", reviewers {people}" if people else "")})
     state.rv_files = files
     paths = [f["path"] for f in files]
     commented = [f["path"] for f in files if f["agent"] or f["reviewer"]]
@@ -573,40 +601,52 @@ async def run_agent():
             state.rv_running = False
 
 
+def badge(children, background, color="white"):
+    return html.Span(children, style={
+        "width": "24px", "height": "24px", "borderRadius": "50%", "flex": "none", "display": "inline-flex",
+        "alignItems": "center", "justifyContent": "center", "fontSize": "0.7rem", "fontWeight": 600,
+        "background": background, "color": color, "fontFamily": SANS})
+
+
+CARD = {"margin": "6px 10px", "padding": "10px 12px", "background": SURFACE, "border": f"1px solid {LINE}",
+        "borderRadius": "8px", "fontFamily": SANS, "fontSize": "0.86rem", "lineHeight": "1.5"}
+
+
 def agent_cards(items):
     with react.For(items=items, name="c"):
-        with mui.Paper(key=B("c.key"), variant="outlined",
-                       style={"margin": "6px", "padding": "8px", "borderLeft": "4px solid #1f6feb",
-                              "fontFamily": "Roboto, sans-serif"}):
-            with mui.Stack(direction="row", spacing=0.5, style={"alignItems": "center", "marginBottom": "4px"}):
-                mui.Chip(label="agent", size="small", color="primary")
+        with html.Div(key=B("c.key"), style={**CARD, "borderLeft": f"3px solid {ACCENT}"}):
+            with html.Div(style={"display": "flex", "alignItems": "center", "gap": "8px", "marginBottom": "6px"}):
+                badge("AI", ACCENT)
+                html.Span("Review agent", style={"fontWeight": 600})
                 with react.If(value="c.severity"):
-                    mui.Chip(label=B("c.severity"), size="small")
+                    mui.Chip(label=B("c.severity"), size="small", variant="outlined")
                 with react.If(value="c.basis"):
-                    caption([B("c.basis")])
-                mui.Box(style={"flex": "1"})
-                for verdict, color in (("valid", "success"), ("wrong", "error"), ("unsure", "inherit")):
-                    mui.Button(verdict, size="small", color=color,
-                               variant=B(f"c.verdict === '{verdict}' ? 'contained' : 'outlined'"),
-                               on_click=C(rate, f"[c.key, '{verdict}']"),
-                               style={"minWidth": 0, "padding": "0 8px", "marginLeft": "4px"})
-            html.Div([B("c.comment")], style={"whiteSpace": "pre-wrap", "fontSize": "0.875rem"})
+                    html.Span([B("c.basis")], style={"color": MUTED, "fontSize": "0.8rem"})
+                html.Div(style={"flex": "1"})
+                with mui.ButtonGroup(size="small"):
+                    for verdict, color in (("valid", "success"), ("wrong", "error"), ("unsure", "inherit")):
+                        mui.Button(verdict.capitalize(), color=color,
+                                   variant=B(f"c.verdict === '{verdict}' ? 'contained' : 'outlined'"),
+                                   on_click=C(rate, f"[c.key, '{verdict}']"),
+                                   style={"padding": "0 10px", "minWidth": 0, "fontSize": "0.78rem"})
+            html.Div([B("c.comment")], style={"whiteSpace": "pre-wrap", "paddingLeft": "32px"})
 
 
 def people_cards(items):
     with react.For(items=items, name="c"):
-        with mui.Paper(key=B("c.key"), variant="outlined",
-                       style={"margin": "6px", "padding": "8px", "borderLeft": "4px solid #8c959f",
-                              "fontFamily": "Roboto, sans-serif", "fontSize": "0.875rem"}):
-            with html.Div(style={"marginBottom": "4px"}):
-                mui.Chip(label=B("c.author"), size="small", style={"marginRight": "6px"})
+        with html.Div(key=B("c.key"), style={**CARD, "borderLeft": f"3px solid {REVIEWER}"}):
+            with html.Div(style={"display": "flex", "alignItems": "center", "gap": "8px", "marginBottom": "6px"}):
+                badge([B("c.author.slice(0, 1).toUpperCase()")], "#E4E8EE", INK)
+                html.Span([B("c.author")], style={"fontWeight": 600})
                 html.Span([B("c.date")], style={"color": MUTED, "fontSize": "0.8rem"})
-            html.Div([B("c.body")], style={"whiteSpace": "pre-wrap"})
+            html.Div([B("c.body")], style={"whiteSpace": "pre-wrap", "paddingLeft": "32px"})
             with react.For(items="c.replies", name="r"):
                 with html.Div(key=B("r.author + r.body.slice(0, 20)"),
-                              style={"color": MUTED, "paddingLeft": "12px", "marginTop": "4px"}):
-                    html.B([B("r.author"), ": "])
-                    html.Span([B("r.body")], style={"whiteSpace": "pre-wrap"})
+                              style={"display": "flex", "gap": "8px", "marginTop": "8px", "paddingLeft": "32px"}):
+                    badge([B("r.author.slice(0, 1).toUpperCase()")], "#EEF1F5", MUTED)
+                    with html.Div():
+                        html.Span([B("r.author")], style={"fontWeight": 600, "marginRight": "6px"})
+                        html.Span([B("r.body")], style={"whiteSpace": "pre-wrap", "color": "#2E3A4F"})
 
 
 def review_view():
@@ -656,43 +696,61 @@ def review_view():
                                      style={"cursor": "pointer", "fontSize": "0.9rem"})
                         with react.For(items="rv_trace", name="t"):
                             html.Div([B("t")], key=B("t"), style={"fontFamily": MONO})
-            with mui.Box(style={"width": "75%", "minWidth": 0, "maxHeight": "calc(100vh - 260px)",
-                                "overflow": "auto", "border": "1px solid #d0d7de"}):
+            with mui.Box(style={"width": "75%", "minWidth": 0, "maxHeight": "calc(100vh - 250px)",
+                                "overflow": "auto", "border": f"1px solid {LINE}", "borderRadius": "8px",
+                                "background": SURFACE}):
                 with react.If(value="rv_outside.agent.length || rv_outside.people.length"):
-                    with html.Div(style={"background": "#fff8c5", "padding": "4px"}):
+                    with html.Div(style={"background": "#FFF7E0", "padding": "6px 4px",
+                                         "borderBottom": f"1px solid {LINE}"}):
                         caption("Comments on lines outside the diff", padding="0 8px")
                         agent_cards("rv_outside.agent")
                         people_cards("rv_outside.people")
-                number = {"width": "48px", "flex": "none", "textAlign": "right", "color": "#8c959f",
-                          "padding": "0 6px"}
-                with html.Div(style={"fontFamily": MONO, "fontSize": "0.8rem", "minWidth": "fit-content"}):
+                number = {"width": "46px", "flex": "none", "textAlign": "right", "color": "#98A2B3",
+                          "padding": "0 8px", "userSelect": "none", "background": B("row.kind === 'hunk' ? "
+                          "'transparent' : 'rgba(23, 32, 51, 0.03)'")}
+                with html.Div(style={"fontFamily": MONO, "fontSize": "0.78rem", "lineHeight": "1.6",
+                                     "minWidth": "fit-content"}):
                     with react.For(items="rv_rows", name="row"):
                         with html.Div(key=B("'r' + row.i")):
                             with html.Div(style={"display": "flex", "background": B("row.bg")}):
                                 html.Span([B("row.old")], style=number)
                                 html.Span([B("row.new")], style=number)
-                                html.Span([B("row.line")], style={"whiteSpace": "pre", "padding": "0 6px"})
+                                html.Span([B("row.line")], style={
+                                    "whiteSpace": "pre", "padding": "0 10px",
+                                    "color": B("row.kind === 'hunk' ? '#4A5A78' : '" + INK + "'")})
                             with react.If(value="row.agent.length || row.people.length"):
-                                with html.Div(style={"background": "#f6f8fa", "position": "sticky", "left": 0,
-                                                     "maxWidth": "calc(75vw - 40px)"}):
+                                with html.Div(style={"background": CANVAS, "position": "sticky", "left": 0,
+                                                     "maxWidth": "calc(75vw - 40px)", "padding": "4px 0",
+                                                     "borderTop": f"1px solid {LINE}",
+                                                     "borderBottom": f"1px solid {LINE}"}):
                                     agent_cards("row.agent")
                                     people_cards("row.people")
 
 
 # ----------------------------------------------------------------------------- Layout
 
-with SinglePageLayout(server) as layout:
-    layout.title.children = ["VTK review history"]
-    layout.icon.hide()
-    with layout.toolbar:
-        mui.Box(style={"flex": "1"})
-        for value, label in TABS:
-            mui.Button(label, on_click=C(f"tab = '{value}'"),
-                       style={"color": "white", "borderRadius": 0,
-                              "borderBottom": B(f"tab === '{value}' ? '2px solid white' : '2px solid transparent'"),
-                              "opacity": B(f"tab === '{value}' ? 1 : 0.75")})
-    with layout.content:
-        with mui.Box(style={"padding": "12px"}):
+with MuiLayout(server, theme=THEME) as layout:
+    mui.GlobalStyles(styles=f"@import url('{FONTS}'); body {{ background: {CANVAS}; }}")
+    with html.Div(style={"display": "flex", "flexDirection": "column", "height": "100vh", "background": CANVAS}):
+        with html.Header(style={"background": SURFACE, "borderBottom": f"1px solid {LINE}", "position": "relative"}):
+            with html.Div(style={"display": "flex", "alignItems": "center", "height": "52px",
+                                 "padding": "0 20px", "gap": "28px"}):
+                with html.Div(style={"display": "flex", "alignItems": "baseline", "gap": "8px"}):
+                    html.Span("VTK review history", style={"fontWeight": 600, "fontSize": "1.05rem",
+                                                           "color": INK, "letterSpacing": "-0.01em"})
+                    html.Span("from GitLab and Discourse", style={"color": MUTED, "fontSize": "0.8rem"})
+                with html.Nav(style={"display": "flex", "gap": "4px", "height": "100%"}):
+                    for value, label in TABS:
+                        html.Button(label, on_click=C(f"tab = '{value}'"), style={
+                            "border": "none", "background": "none", "cursor": "pointer", "fontFamily": SANS,
+                            "fontSize": "0.9rem", "padding": "0 12px", "height": "100%",
+                            "fontWeight": B(f"tab === '{value}' ? 600 : 500"),
+                            "color": B(f"tab === '{value}' ? '{INK}' : '{MUTED}'"),
+                            "borderBottom": B(f"tab === '{value}' ? '2px solid {ACCENT}' : '2px solid transparent'"),
+                        })
+            mui.LinearProgress(style={"position": "absolute", "left": 0, "right": 0, "bottom": "-1px", "height": "2px",
+                                      "visibility": B("trame__busy ? 'visible' : 'hidden'")})
+        with html.Main(style={"flex": "1", "overflow": "auto", "padding": "16px 20px"}):
             for value, view in (("review", review_view), ("rules", rules_view), ("deprecations", deprecations_view),
                                 ("trends", trends_view), ("search", search_view)):
                 with react.If(value=f"tab === '{value}'"):
