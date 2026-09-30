@@ -258,7 +258,8 @@ class ToolReviewer(Reviewer):
                 break
         self.report(messages)
         k = max(2, -(-len(todo) // per_hunks))
-        return self.select(title, self.comments, k), len(todo), len(self.comments)
+        verified = {(f["path"], f["line"]) for f in self.findings}
+        return self.select(title, self.comments, k, verified), len(todo), len(self.comments)
 
 
 def main():

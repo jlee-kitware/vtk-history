@@ -201,14 +201,23 @@ class Reviewer:
                              "evidence": [h["ref"] for h in precedent + on_file if h["ref"] != exclude_ref]})
         return comments
 
-    def select(self, title, candidates, k):
-        """Keep the k comments a maintainer would post, after dropping near-duplicates."""
+    def select(self, title, candidates, k, verified=()):
+        """Keep the comments a maintainer would post.
+
+        Near-duplicates (same file, within 3 lines, mostly the same words) are merged. Comments on a
+        line a static check flagged are kept outright; the model picks up to k of the rest.
+        """
+        words = lambda c: set(c["comment"].lower().split())
+        same = lambda a, b: (a["path"] == b["path"] and abs(a["line"] - b["line"]) <= 3
+                             and len(words(a) & words(b)) >= 0.5 * len(words(a) | words(b)))
         unique = []
         for c in candidates:
-            if not any(u["path"] == c["path"] and abs(u["line"] - c["line"]) <= 3 for u in unique):
+            if not any(same(u, c) for u in unique):
                 unique.append(c)
+        kept = [c for c in unique if (c["path"], c["line"]) in verified]
+        unique = [c for c in unique if (c["path"], c["line"]) not in verified]
         if len(unique) <= k:
-            return unique
+            return kept + unique
         listing = "\n".join(f"{i}. {c['path']}:{c['line']} [{c['severity']}] {c['comment'][:400]}"
                             for i, c in enumerate(unique))
         out = chat(self.model, "You select code review comments. Reply with JSON only.",
@@ -217,7 +226,7 @@ class Reviewer:
         if not keep:
             order = {"bug": 0, "question": 1, "convention": 2, "nit": 3}
             keep = sorted(range(len(unique)), key=lambda i: order.get(unique[i]["severity"], 4))
-        return [unique[i] for i in dict.fromkeys(keep)][:k]
+        return kept + [unique[i] for i in dict.fromkeys(keep)][:k]
 
     def review(self, base, head, title, until, exclude_ref=None, max_hunks=60, parallel=2, per_hunks=6):
         from concurrent.futures import ThreadPoolExecutor
