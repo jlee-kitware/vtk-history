@@ -569,18 +569,20 @@ def search_results():
 
 
 def result_table(items):
-    with mui.TableContainer(style={"border": f"1px solid {LINE}", "borderRadius": "8px", "background": SURFACE}):
+    cell = {"overflow": "hidden", "overflowWrap": "anywhere", "verticalAlign": "top"}
+    with mui.TableContainer(style={"border": f"1px solid {LINE}", "borderRadius": "8px", "background": SURFACE,
+                                   "overflowX": "hidden"}):
         with mui.Table(size="small", style={"tableLayout": "fixed", "width": "100%"}):
             head(("Kind", 70), ("Ref", 110), ("Date", 100), ("Author", 130), ("Title and excerpt", None))
             with mui.TableBody():
                 with react.For(items=items, name="s"):
                     with mui.TableRow(key=B("s.kind + s.ref + (s.path || '') + s.title"), hover=True):
-                        mui.TableCell([B("s.kind")])
-                        with mui.TableCell():
-                            link("s.ref", "s.url")
-                        mui.TableCell([B("s.date")], style={"whiteSpace": "nowrap"})
-                        mui.TableCell([B("s.author")])
-                        with mui.TableCell():
+                        mui.TableCell([B("s.kind")], style={**cell, "whiteSpace": "nowrap", "overflowWrap": "normal"})
+                        with mui.TableCell(style=cell, title=B("s.ref")):
+                            link("s.label", "s.url")
+                        mui.TableCell([B("s.date")], style={**cell, "whiteSpace": "nowrap"})
+                        mui.TableCell([B("s.author")], style=cell)
+                        with mui.TableCell(style=cell):
                             html.Div([B("s.title")], style={"fontWeight": 500})
                             with react.If(value="s.path"):
                                 caption([B("s.path")])
