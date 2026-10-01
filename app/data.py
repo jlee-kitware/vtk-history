@@ -223,7 +223,7 @@ class Store:
 
     def search(self, query, kind=None, since=None, until=None, k=25):
         rows = []
-        for h in self.index.search(query, k=k, kind=kind or None, since=since or None, until=until or None):
+        for h in self.index.search_mixed(query, k=k, kind=kind or None, since=since or None, until=until or None):
             ref = h["ref"]
             if ref.startswith("!"):
                 url = mr_url(ref[1:])
@@ -234,5 +234,6 @@ class Store:
             rows.append({"kind": h["kind"], "ref": ref, "date": h["date"], "author": h["author"] or "",
                          "title": h["title"] or "", "path": h["path"] or "", "url": url,
                          "snippet": " ".join((h["text"] or "").split())[:400],
-                         "topic": int(ref.split()[1]) if h["kind"] == "post" and ref.startswith("topic ") else None})
+                         "topic": int(ref.split()[1]) if h["kind"] == "post" and ref.startswith("topic ") else None,
+                         "other_kind": bool(h.get("other_kind"))})
         return rows

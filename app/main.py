@@ -105,7 +105,7 @@ state.update({
     "trend_rows": [], "trend_name": None, "trend_row": None, "trend_chart": "", "trend_title": "",
     "q": "", "q_kind": "", "q_since": "", "q_until": "", "search_rows": [], "searching": False, "search_error": "",
     "kinds": options(["thread", "mr", "issue", "post", "blog", "doc", "note", "class"]),
-    "topic": None, "topic_error": "",
+    "topic": None, "topic_error": "", "search_more": [],
 })
 
 
@@ -463,10 +463,12 @@ def run_search(q=None):
     state.searching, state.search_error = True, ""
     state.flush()
     try:
-        state.search_rows = store.search(state.q, state.q_kind or None, state.q_since, state.q_until)
+        found = store.search(state.q, state.q_kind or None, state.q_since, state.q_until)
+        state.search_rows = [r for r in found if not r["other_kind"]]
+        state.search_more = [r for r in found if r["other_kind"]]
     except OSError as e:
         state.search_error = f"Search needs the DGX Spark for meaning-based matching and could not reach it: {e}"
-        state.search_rows = []
+        state.search_rows, state.search_more = [], []
     finally:
         state.searching = False
 
@@ -556,25 +558,37 @@ def search_results():
         mui.Alert([B("search_error")], severity="warning", style={"marginBottom": "8px"})
     with react.If(value="topic_error"):
         mui.Alert([B("topic_error")], severity="warning", style={"marginBottom": "8px"})
-    with table(220), mui.Table(size="small", sticky_header=True):
-        head(("Kind", 70), ("Ref", 110), ("Date", 100), ("Author", 130), ("Title and excerpt", None))
-        with mui.TableBody():
-            with react.For(items="search_rows", name="s"):
-                with mui.TableRow(key=B("s.kind + s.ref + (s.path || '')"), hover=True):
-                    mui.TableCell([B("s.kind")])
-                    with mui.TableCell():
-                        link("s.ref", "s.url")
-                    mui.TableCell([B("s.date")], style={"whiteSpace": "nowrap"})
-                    mui.TableCell([B("s.author")])
-                    with mui.TableCell():
-                        html.Div([B("s.title")], style={"fontWeight": 500})
-                        with react.If(value="s.path"):
-                            caption([B("s.path")])
-                        caption([B("s.snippet")])
-                        with react.If(value="s.topic"):
-                            mui.Button("Read topic", size="small", variant="text",
-                                       on_click=C(open_topic, "[s.topic]"),
-                                       style={"padding": "0 4px", "minWidth": 0, "marginTop": "2px"})
+    with html.Div(style={"maxHeight": "calc(100vh - 220px)", "overflowY": "auto"}):
+        result_table("search_rows")
+        with react.If(value="search_more.length"):
+            html.Div("Also matching in other sources", style={"fontWeight": 600, "fontSize": "0.85rem",
+                                                              "margin": "14px 0 6px"})
+            caption("The best matches of each kind that did not make the list above. Choose a Kind to see more.",
+                    marginBottom="6px")
+            result_table("search_more")
+
+
+def result_table(items):
+    with mui.TableContainer(style={"border": f"1px solid {LINE}", "borderRadius": "8px", "background": SURFACE}):
+        with mui.Table(size="small", style={"tableLayout": "fixed", "width": "100%"}):
+            head(("Kind", 70), ("Ref", 110), ("Date", 100), ("Author", 130), ("Title and excerpt", None))
+            with mui.TableBody():
+                with react.For(items=items, name="s"):
+                    with mui.TableRow(key=B("s.kind + s.ref + (s.path || '') + s.title"), hover=True):
+                        mui.TableCell([B("s.kind")])
+                        with mui.TableCell():
+                            link("s.ref", "s.url")
+                        mui.TableCell([B("s.date")], style={"whiteSpace": "nowrap"})
+                        mui.TableCell([B("s.author")])
+                        with mui.TableCell():
+                            html.Div([B("s.title")], style={"fontWeight": 500})
+                            with react.If(value="s.path"):
+                                caption([B("s.path")])
+                            caption([B("s.snippet")])
+                            with react.If(value="s.topic"):
+                                mui.Button("Read topic", size="small", variant="text",
+                                           on_click=C(open_topic, "[s.topic]"),
+                                           style={"padding": "0 4px", "minWidth": 0, "marginTop": "2px"})
 
 
 # ----------------------------------------------------------------------------- Review

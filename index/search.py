@@ -5,7 +5,9 @@ Combines two rankings by reciprocal rank fusion:
   keyword    SQLite FTS5 BM25 over title, text, file path, and class (exact identifiers)
   meaning    cosine similarity of qwen3-embedding vectors (paraphrases)
 
-Filters: kind (thread, mr, issue, post), date range, module, class, path prefix, author.
+Filters: kind (thread, mr, issue, post, blog, doc, note, class), date range, module, class, path prefix, author.
+With no kind given, search_mixed adds the best few of each kind missing from the overall top results, so a
+small source (blog posts, docs) is not crowded out by a large one (review threads).
 The --until filter lets an evaluation see only history from before a given date.
 
 Usage:
@@ -94,10 +96,10 @@ class Index:
             [match, max(2000, 40 * n), *params, n]).fetchall()
         return [r[0] for r in rows]
 
-    def meaning(self, query, n, **f):
+    def meaning(self, query, n, query_vector=None, **f):
         if self.vectors is None:
             return []
-        scores = self.vectors @ self.embed([query])[0]
+        scores = self.vectors @ (self.embed([query])[0] if query_vector is None else query_vector)
         mask = np.ones(len(scores), bool)
         for col in ("kind", "module", "class", "author"):
             if f.get(col):
@@ -112,22 +114,48 @@ class Index:
         top = np.argpartition(-scores, min(n, len(scores) - 1))[:n]
         return [int(i) + 1 for i in top[np.argsort(-scores[top])] if np.isfinite(scores[i])]
 
-    def search(self, query, k=10, pool=50, **filters):
+    def fuse(self, query, pool, query_vector=None, **filters):
         fused = {}
-        for ranking in (self.keyword(query, pool, **filters), self.meaning(query, pool, **filters)):
+        for ranking in (self.keyword(query, pool, **filters),
+                        self.meaning(query, pool, query_vector=query_vector, **filters)):
             for rank, rowid in enumerate(ranking):
                 fused[rowid] = fused.get(rowid, 0.0) + 1.0 / (RRF_K + rank + 1)
-        best = sorted(fused, key=fused.get, reverse=True)[:k]
+        return fused
+
+    def rows(self, ids, scores, **extra):
         rows = {r["rowid"]: r for r in self.con.execute(
-            f"SELECT rowid, * FROM docs WHERE rowid IN ({','.join('?' * len(best))})", best)} if best else {}
-        return [dict(rows[i], score=round(fused[i], 4)) for i in best]
+            f"SELECT rowid, * FROM docs WHERE rowid IN ({','.join('?' * len(ids))})", ids)} if ids else {}
+        return [dict(rows[i], score=round(scores[i], 4), **extra) for i in ids]
+
+    def search(self, query, k=10, pool=50, **filters):
+        fused = self.fuse(query, pool, **filters)
+        best = sorted(fused, key=fused.get, reverse=True)[:k]
+        return self.rows(best, fused)
+
+    def search_mixed(self, query, k=25, per_kind=3, pool=50, **filters):
+        """The overall best k, then the best per_kind of every kind absent from them (marked other_kind)."""
+        if filters.get("kind"):
+            return self.search(query, k, pool, **filters)
+        qv = self.embed([query])[0] if self.vectors is not None else None
+        fused = self.fuse(query, pool, query_vector=qv, **filters)
+        best = sorted(fused, key=fused.get, reverse=True)[:k]
+        out = self.rows(best, fused)
+        shown = {r["kind"] for r in out}
+        kinds = [r[0] for r in self.con.execute("SELECT DISTINCT kind FROM docs")]
+        for kind in kinds:
+            if kind in shown:
+                continue
+            per = self.fuse(query, pool, query_vector=qv, **dict(filters, kind=kind))
+            top = sorted(per, key=per.get, reverse=True)[:per_kind]
+            out += self.rows(top, per, other_kind=True)
+        return out
 
 
 def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("query")
     p.add_argument("-k", type=int, default=10)
-    p.add_argument("--kind", choices=["thread", "mr", "issue", "post", "doc", "note", "class"])
+    p.add_argument("--kind", choices=["thread", "mr", "issue", "post", "blog", "doc", "note", "class"])
     p.add_argument("--since")
     p.add_argument("--until")
     p.add_argument("--module")
