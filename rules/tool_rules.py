@@ -91,16 +91,39 @@ def list_checks(config=None):
     return [line.strip() for line in out.splitlines()[1:] if line.strip()]
 
 
+ALIAS_FAMILIES = ("hicpp-", "cert-", "cppcoreguidelines-", "google-", "llvm-", "misc-", "bugprone-")
+
+
+def drop_aliases(every, enabled):
+    """Keep one name per check: aliases from clang-tidy's alias table, plus same-named checks in the
+    guideline families that duplicate a check VTK already enables (the table online lags the binary)."""
+    table = json.loads((ROOT / "rules/clang_tidy_aliases.json").read_text())["aliases"]
+    tail = lambda c: c.split("-", 1)[1]
+    enabled_tails = {tail(c): c for c in enabled}
+    kept = []
+    for c in every:
+        if c in table and table[c] in every:
+            continue
+        if c not in enabled and c.startswith(ALIAS_FAMILIES[:5]) and tail(c) in enabled_tails:
+            continue
+        kept.append(c)
+    return kept
+
+
 def tidy_rules(repo, ref, model):
     config = Path("/tmp/vtk.clang-tidy")
     text = show(repo, ref, ".clang-tidy")
     config.write_text(text)
     enabled, every = set(list_checks(config)), list_checks()
-    stated = {}
-    for i in range(0, len(every), BATCH):
-        names = every[i:i + BATCH]
+    every = drop_aliases(every, enabled)
+    old = ROOT / "data/tool_rules.json"
+    known = {r["check"]: r["rule"] for r in json.loads(old.read_text())["rules"]} if old.exists() else {}
+    stated = {c: known[c] for c in every if c in known and known[c] != c}
+    todo = [c for c in every if c not in stated]
+    for i in range(0, len(todo), BATCH):
+        names = todo[i:i + BATCH]
         stated.update((ask(model, TIDY_PROMPT.format(names="\n".join(names))) or {}).get("rules") or {})
-        print(f"  stated {min(i + BATCH, len(every))}/{len(every)} checks", flush=True)
+        print(f"  stated {min(i + BATCH, len(todo))}/{len(todo)} checks", flush=True)
     rules = [{"tool": "clang-tidy", "check": c, "enabled": c in enabled, "rule": stated.get(c) or c,
               "evidence": ".clang-tidy enables it" if c in enabled else "not enabled in .clang-tidy",
               "url": f"https://clang.llvm.org/extra/clang-tidy/checks/{c.split('-', 1)[0]}/{c.split('-', 1)[1]}.html"}
@@ -157,6 +180,7 @@ def main():
     sources = {c: subprocess.run(["git", "-C", args.repo, "rev-parse", f"{args.ref}:{c}"], capture_output=True,
                                  text=True).stdout.strip() for c in configs}
     sources["clang-tidy"] = subprocess.run([CLANG_TIDY, "--version"], capture_output=True, text=True).stdout.strip()
+    sources["aliases"] = str(len(json.loads((ROOT / "rules/clang_tidy_aliases.json").read_text())["aliases"]))
     out_path = ROOT / "data/tool_rules.json"
     if not args.force and out_path.exists() and json.loads(out_path.read_text()).get("sources") == sources:
         print("tool configuration unchanged; keeping data/tool_rules.json")

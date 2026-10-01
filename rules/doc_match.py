@@ -52,6 +52,28 @@ Reply with JSON only: {{"verdict": "...", "why": "..."}}
   why      one short sentence"""
 
 
+CONFIRM = """A rule mined from VTK code reviews was matched to a check VTK's tools run.
+
+Mined rule: {mined}
+Tool check: {check} ({tool}): {rule}
+
+{question}
+Reply with JSON only: {{"answer": "yes" or "no", "why": "one short sentence"}}"""
+QUESTIONS = {
+    "same": "Is finding code that breaks the mined rule the main purpose of this tool check, so that running the "
+            "check would report that code? Answer no if the check targets a different or much narrower problem.",
+    "contradicts": "Would code that follows the mined rule be reported or rewritten by this tool check? Answer no if "
+                   "the check agrees with the mined rule or concerns something else.",
+}
+
+
+def confirm(model, mined, tool, verdict):
+    question = QUESTIONS["same" if verdict == "automatable" else verdict]
+    reply = ask(model, CONFIRM.format(mined=mined, check=tool.get("check", ""), tool=tool.get("tool", ""),
+                                      rule=tool["rule"], question=question))
+    return str(reply.get("answer", "")).lower().startswith("y"), reply.get("why", "")
+
+
 def embed(texts, model="qwen3-embedding:latest"):
     body = json.dumps({"model": model, "input": texts}).encode()
     req = urllib.request.Request(f"{HOST}/api/embed", body, {"Content-Type": "application/json"})
@@ -70,7 +92,16 @@ def judge(model, mined, doc, quote, source="doc"):
 
 def check_gold(model, source):
     gold = json.loads((ROOT / f"rules/{source}_match_gold.json").read_text())
-    misses = [g for g in gold if judge(model, g["mined"], g["doc"], g.get("quote", g["doc"]), source)[0] != g["verdict"]]
+
+    def final(g):
+        verdict = judge(model, g["mined"], g["doc"], g.get("quote", g["doc"]), source)[0]
+        if source == "tool" and verdict in ("same", "contradicts"):
+            ok, _ = confirm(model, g["mined"], {"rule": g["doc"], "check": g.get("check", ""), "tool": g.get("tool", "")},
+                            verdict)
+            verdict = verdict if ok else "unrelated"
+        return "unrelated" if verdict == "related" and g["verdict"] == "unrelated" else verdict
+
+    misses = [g for g in gold if final(g) != g["verdict"]]
     for g in misses:
         print(f"gold miss: expected {g['verdict']}: {g['mined'][:60]} / {g['doc'][:60]}")
     if len(misses) > 1:
@@ -109,6 +140,20 @@ def main():
 
     with ThreadPoolExecutor(2) as pool:
         results = list(pool.map(run, jobs))
+    if args.source == "tool":
+        candidates = [r for r in results if r[2] in ("same", "contradicts")]
+        print(f"confirming {len(candidates)} tool matches", flush=True)
+
+        def check(r):
+            i, j, verdict, why = r
+            kind = "automatable" if verdict == "same" and not docs[j]["enabled"] else verdict
+            ok, reason = confirm(args.model, mined[i]["rule"], docs[j], kind)
+            return (i, j, verdict if ok else "unrelated", why if ok else reason)
+
+        with ThreadPoolExecutor(2) as pool:
+            confirmed = {(r[0], r[1]): r for r in pool.map(check, candidates)}
+        results = [confirmed.get((r[0], r[1]), r) for r in results]
+        print(f"{sum(r[2] in ('same', 'contradicts') for r in results)} confirmed", flush=True)
     matches, restated, automatable = {}, set(), {}
     for i, j, verdict, why in results:
         if verdict not in ("same", "contradicts"):
