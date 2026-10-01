@@ -233,5 +233,6 @@ class Store:
                 url = h["url"]
             rows.append({"kind": h["kind"], "ref": ref, "date": h["date"], "author": h["author"] or "",
                          "title": h["title"] or "", "path": h["path"] or "", "url": url,
-                         "snippet": " ".join((h["text"] or "").split())[:400]})
+                         "snippet": " ".join((h["text"] or "").split())[:400],
+                         "topic": int(ref.split()[1]) if h["kind"] == "post" and ref.startswith("topic ") else None})
         return rows

@@ -28,6 +28,7 @@ from trame.widgets import html, mui, react
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from charts import line_svg  # noqa: E402
+import topics  # noqa: E402
 from data import DECISIONS, Store  # noqa: E402
 from review_data import Reviews, comment_key  # noqa: E402
 
@@ -103,7 +104,8 @@ state.update({
     "trend_what": "terms", "trend_source": "mr", "trend_kind": "emerging", "trend_common": False,
     "trend_rows": [], "trend_name": None, "trend_row": None, "trend_chart": "", "trend_title": "",
     "q": "", "q_kind": "", "q_since": "", "q_until": "", "search_rows": [], "searching": False, "search_error": "",
-    "kinds": options(["thread", "mr", "issue", "post", "doc", "note", "class"]),
+    "kinds": options(["thread", "mr", "issue", "post", "blog", "doc", "note", "class"]),
+    "topic": None, "topic_error": "",
 })
 
 
@@ -474,7 +476,75 @@ def search_key(key, value):
         run_search(value)
 
 
+def open_topic(tid):
+    found = topics.topic(tid) if tid else None
+    state.topic_error = "" if found else f"Topic {tid} is not in the forum mirror."
+    state.topic = found
+
+
+def topic_view():
+    with html.Div(style={"display": "flex", "alignItems": "center", "gap": "12px", "marginBottom": "10px"}):
+        mui.Button("Back to results", size="small", variant="outlined", on_click=C("topic = null"))
+        html.Span([B("topic.title")], style={"fontWeight": 600, "fontSize": "1.05rem"})
+        html.Div(style={"flex": "1"})
+        link("'Open on discourse.vtk.org'", "topic.url")
+    with mui.Box(style={"display": "flex", "gap": "12px"}):
+        with html.Div(style={"flex": "3", "minWidth": 0, "maxHeight": "calc(100vh - 190px)", "overflowY": "auto"}):
+            caption([B("'Started ' + topic.created + ', ' + topic.posts.length + ' posts'")], marginBottom="6px")
+            with react.For(items="topic.posts", name="p"):
+                with html.Div(key=B("p.n"), style={
+                        "margin": "0 0 8px", "padding": "10px 12px", "background": SURFACE, "borderRadius": "8px",
+                        "border": B(f"p.accepted ? '2px solid #1A7F37' : '1px solid {LINE}'"), "fontSize": "0.88rem"}):
+                    with html.Div(style={"display": "flex", "alignItems": "center", "gap": "8px", "marginBottom": "6px"}):
+                        badge([B("p.author.slice(0, 1).toUpperCase()")], "#E4E8EE", INK)
+                        html.Span([B("p.author")], style={"fontWeight": 600})
+                        with react.If(value="p.staff"):
+                            html.Span("Kitware", style={"fontSize": "0.72rem", "color": ACCENT, "background": ACCENT_TINT,
+                                                         "borderRadius": "8px", "padding": "0 6px"})
+                        html.Span([B("p.date")], style={"color": MUTED, "fontSize": "0.8rem"})
+                        with react.If(value="p.reply_to"):
+                            html.Span([B("'replying to #' + p.reply_to")], style={"color": MUTED, "fontSize": "0.8rem"})
+                        html.Div(style={"flex": "1"})
+                        with react.If(value="p.accepted"):
+                            html.Span("Accepted answer", style={"fontSize": "0.75rem", "fontWeight": 600,
+                                                                 "color": "#1A7F37"})
+                        html.Span([B("'#' + p.n")], style={"color": MUTED, "fontSize": "0.8rem"})
+                    html.Div([B("p.text")], style={"whiteSpace": "pre-wrap", "paddingLeft": "32px",
+                                                   "overflowWrap": "anywhere"})
+        with html.Div(style={"flex": "1", "minWidth": "240px"}):
+            with mui.Paper(variant="outlined", style={"padding": "10px 12px", "fontSize": "0.85rem"}):
+                html.Div("Cited by", style={"fontWeight": 600, "marginBottom": "4px"})
+                with react.If(value="!topic.incoming.length"):
+                    caption("Nothing in the mirrored MRs, issues, review threads, or blog posts cites this topic.")
+                with react.For(items="topic.incoming", name="i"):
+                    with html.Div(key=B("i.kind + i.label"), style={"margin": "6px 0"}):
+                        link("i.label", "i.url")
+                        html.Span([" ", B("i.kind"), ", ", B("i.date")], style={"color": MUTED, "fontSize": "0.78rem"})
+                        with react.If(value="i.title && i.title !== i.label"):
+                            caption([B("i.title")])
+                html.Div("Links to", style={"fontWeight": 600, "margin": "12px 0 4px"})
+                with react.If(value="!topic.outgoing.length"):
+                    caption("The topic links to no MRs, issues, or other topics.")
+                with react.For(items="topic.outgoing", name="o"):
+                    with html.Div(key=B("o.label"), style={"margin": "6px 0"}):
+                        with react.If(value="o.topic"):
+                            html.A([B("o.label")], href="#", style={"color": ACCENT, "fontWeight": 500},
+                                   on_click=C(open_topic, "[o.topic]", modifiers=["prevent"]))
+                        with react.If(value="!o.topic"):
+                            link("o.label", "o.url")
+                        html.Span([" ", B("o.kind")], style={"color": MUTED, "fontSize": "0.78rem"})
+                        with react.If(value="o.title"):
+                            caption([B("o.title")])
+
+
 def search_view():
+    with react.If(value="topic"):
+        topic_view()
+    with react.If(value="!topic"):
+        search_results()
+
+
+def search_results():
     with bar():
         field("Ask about VTK history: an API, a design question, a bug", "q", on_enter=search_key)
         select("Kind", "q_kind", "kinds", 120)
@@ -484,6 +554,8 @@ def search_view():
                    on_click=C(run_search, "[q]"))
     with react.If(value="search_error"):
         mui.Alert([B("search_error")], severity="warning", style={"marginBottom": "8px"})
+    with react.If(value="topic_error"):
+        mui.Alert([B("topic_error")], severity="warning", style={"marginBottom": "8px"})
     with table(220), mui.Table(size="small", sticky_header=True):
         head(("Kind", 70), ("Ref", 110), ("Date", 100), ("Author", 130), ("Title and excerpt", None))
         with mui.TableBody():
@@ -499,6 +571,10 @@ def search_view():
                         with react.If(value="s.path"):
                             caption([B("s.path")])
                         caption([B("s.snippet")])
+                        with react.If(value="s.topic"):
+                            mui.Button("Read topic", size="small", variant="text",
+                                       on_click=C(open_topic, "[s.topic]"),
+                                       style={"padding": "0 4px", "minWidth": 0, "marginTop": "2px"})
 
 
 # ----------------------------------------------------------------------------- Review

@@ -11,6 +11,8 @@ while pgrep -f "[r]un_bench.sh" > /dev/null || pgrep -f "python3 -u agent/evalua
     sleep 120
 done
 
+step "sync Kitware blog"
+python3 -u mirror/blog_mirror.py sync
 step "fetch vtk"
 git -C /home/jlee/gitsync/vtk fetch -q upstream master
 step "extract review threads"

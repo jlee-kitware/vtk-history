@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build the search index over VTK review threads, MRs, issues, and Discourse posts.
+"""Build the search index over VTK review threads, MRs, issues, Discourse posts, and Kitware blog posts.
 
 Each searchable unit becomes one row in data/index/docs.sqlite, with an FTS5 full-text
 index for exact identifiers, and one embedding row in data/index/vectors.npy for
@@ -12,6 +12,7 @@ meaning-based search. Units:
   doc      one section of a VTK design document, guide, file format spec, or README (index/docs.py)
   note     one release note as its author wrote it, linked to the MR that added it
   class    the Doxygen description of one VTK class
+  blog     one section of a Kitware blog post that mentions VTK (mirror/blog_mirror.py)
 
 Embeddings come from qwen3-embedding, truncated to --dim dimensions (the model is trained
 so that leading dimensions stand alone) and stored as float16. The embedding cache is
@@ -44,6 +45,42 @@ HOST = "http://192.168.50.23:11435"
 EMBED_CHARS = 2000
 BATCH = 32
 SKIP_KINDS = {"approval"}
+
+
+BLOG_CHARS = 3000
+
+
+def about_vtk(title, body):
+    return "VTK" in title or len(re.findall(r"\bVTK\b", body)) >= 2
+
+
+def blog_units(blog):
+    """Posts about VTK (named in the title or at least twice in the text), each split at its headings into
+    sections of up to BLOG_CHARS, small sections merged."""
+    for f in sorted(glob.glob(f"{blog}/posts/*.json")):
+        b = json.load(open(f))
+        title = html.unescape(b["title"])
+        if not about_vtk(title, strip_html(b["content"])):
+            continue
+        parts = re.split(r"(?i)<h[2-4][^>]*>(.*?)</h[2-4]>", b["content"])
+        sections = [("", parts[0])] + [(strip_html(parts[i]), parts[i + 1]) for i in range(1, len(parts) - 1, 2)]
+        chunks, heading, text = [], "", ""
+        for head, body in sections:
+            body = strip_html(body)
+            if text and len(text) + len(body) > BLOG_CHARS:
+                chunks.append((heading, text))
+                heading, text = head, ""
+            heading = heading or head
+            text = f"{text}\n\n{head}\n{body}".strip() if head else f"{text}\n\n{body}".strip()
+        if text:
+            chunks.append((heading, text))
+        for n, (head, text) in enumerate(chunks):
+            if len(text) < 80:
+                continue
+            full = f"{title}" + (f": {head}" if head else "") + f"\n\n{text}"
+            yield {"id": f"blog:{b['id']}/{n}", "kind": "blog", "ref": "blog", "url": b["link"],
+                   "date": b["date"][:10], "author": "Kitware blog", "path": None, "module": None, "class": None,
+                   "title": title + (f": {head}" if head else ""), "text": full, "embed_text": full[:EMBED_CHARS]}
 
 
 def post(path, payload, timeout=600):
@@ -199,6 +236,7 @@ def main():
     p.add_argument("--examples", default="data/review_examples.jsonl")
     p.add_argument("--mirror", default="data/vtk-history")
     p.add_argument("--discourse", default="data/discourse-history")
+    p.add_argument("--blog", default="data/blog-history")
     p.add_argument("--embed-model", default="qwen3-embedding:latest")
     p.add_argument("--dim", type=int, default=1024)
     p.add_argument("--theme-cache", default="data/trends/doc_embeddings.npy")
@@ -211,6 +249,7 @@ def main():
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
     rows = list(threads(args.examples)) + list(issues(args.mirror)) + list(posts(args.discourse)) + list(mrs(args.mirror))
+    rows += list(blog_units(args.blog))
     if not args.no_docs:
         mr_by_sha = merge_commits(args.mirror)
         ref = next(r for r in ("upstream/master", "origin/master", "master")
@@ -222,7 +261,7 @@ def main():
         for r in rows:
             if r["kind"] == "note" and r.get("mr"):
                 r["url"] = f"https://gitlab.kitware.com/vtk/vtk/-/merge_requests/{r['mr']}"
-    counts = {k: sum(1 for r in rows if r["kind"] == k) for k in ("thread", "issue", "post", "mr", "doc", "note", "class")}
+    counts = {k: sum(1 for r in rows if r["kind"] == k) for k in ("thread", "issue", "post", "mr", "doc", "note", "class", "blog")}
     print(f"{len(rows)} units: {counts}", flush=True)
     write_rows(rows, out / "docs.sqlite")
     print(f"wrote {out / 'docs.sqlite'}", flush=True)
