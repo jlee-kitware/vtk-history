@@ -67,9 +67,18 @@ QUESTIONS = {
 }
 
 
+def safe_ask(model, prompt):
+    """A request that keeps failing counts as no match rather than stopping the run."""
+    try:
+        return ask(model, prompt, max_tokens=200) or {}
+    except Exception as e:
+        print(f"  judge request failed, counted as no match: {e}", flush=True)
+        return {}
+
+
 def confirm(model, mined, tool, verdict):
     question = QUESTIONS["same" if verdict == "automatable" else verdict]
-    reply = ask(model, CONFIRM.format(mined=mined, check=tool.get("check", ""), tool=tool.get("tool", ""),
+    reply = safe_ask(model, CONFIRM.format(mined=mined, check=tool.get("check", ""), tool=tool.get("tool", ""),
                                       rule=tool["rule"], question=question))
     return str(reply.get("answer", "")).lower().startswith("y"), reply.get("why", "")
 
@@ -84,7 +93,7 @@ def embed(texts, model="qwen3-embedding:latest"):
 
 def judge(model, mined, doc, quote, source="doc"):
     what, rule_label, quote_label, same_when = SOURCES[source]
-    reply = ask(model, PROMPT.format(what=what, rule_label=rule_label, quote_label=quote_label, same_when=same_when,
+    reply = safe_ask(model, PROMPT.format(what=what, rule_label=rule_label, quote_label=quote_label, same_when=same_when,
                                      mined=mined, doc=doc, quote=quote))
     verdict = reply.get("verdict") if reply.get("verdict") in VERDICTS else "unrelated"
     return verdict, reply.get("why", "")

@@ -2,9 +2,10 @@
 """Collect the rules VTK's tools enforce, and the clang-tidy checks VTK leaves off.
 
 Sources, all read from the VTK clone at --ref and the MR mirror:
-  clang-tidy    every check clang-tidy knows, marked enabled when VTK's .clang-tidy turns it on (listed by
-                the clang-tidy binary), each stated as a rule by the model; plus the functions VTK bans
-                through bugprone-unsafe-functions, with their VTK replacements
+  clang-tidy    every check clang-tidy knows (aliases dropped), marked enabled when VTK's .clang-tidy turns it on
+                (listed by the clang-tidy binary) and does something with VTK's options, each described by its
+                official documentation (cached in data/clang_tidy_docs.json; the model states the few without a
+                page); plus the functions VTK bans through bugprone-unsafe-functions, with their VTK replacements
   clang-format  the settings in .clang-format that decide how code looks
   ghostflow     the checks the GitLab robot (kwrobot) runs on every MR, counted from its messages
   codespell and editorconfig
@@ -21,7 +22,10 @@ import json
 import re
 import subprocess
 import sys
+import urllib.request
 from collections import Counter
+from concurrent.futures import ThreadPoolExecutor
+from html import unescape
 from pathlib import Path
 
 import yaml
@@ -91,7 +95,34 @@ def list_checks(config=None):
     return [line.strip() for line in out.splitlines()[1:] if line.strip()]
 
 
-ALIAS_FAMILIES = ("hicpp-", "cert-", "cppcoreguidelines-", "google-", "llvm-", "misc-", "bugprone-")
+ALIAS_FAMILIES = ("hicpp-", "cert-", "cppcoreguidelines-", "google-", "llvm-")
+DOCS_URL = "https://clang.llvm.org/extra/clang-tidy/checks/{family}/{name}.html"
+NEEDS_OPTIONS = {"readability-identifier-naming": "readability-identifier-naming."}
+
+
+def check_doc(check):
+    family, name = check.split("-", 1) if not check.startswith("clang-analyzer-") else ("clang-analyzer", check[15:])
+    try:
+        with urllib.request.urlopen(DOCS_URL.format(family=family, name=name), timeout=30) as r:
+            page = r.read().decode("utf-8", "replace")
+    except Exception:
+        return None
+    paragraphs = [unescape(re.sub(r"<[^>]+>", "", p)).strip().replace("\n", " ")
+                  for p in re.findall(r"<p>(.*?)</p>", page[page.find("<h1"):], re.S)]
+    paragraphs = [p for p in paragraphs if p and "is an alias" not in p]
+    return " ".join(paragraphs[:2])[:500] or None
+
+
+def check_docs(checks):
+    cache_path = ROOT / "data/clang_tidy_docs.json"
+    cache = json.loads(cache_path.read_text()) if cache_path.exists() else {}
+    todo = [c for c in checks if c not in cache]
+    with ThreadPoolExecutor(8) as pool:
+        for c, doc in zip(todo, pool.map(check_doc, todo)):
+            cache[c] = doc
+    cache_path.write_text(json.dumps(cache, indent=1, sort_keys=True))
+    print(f"  official descriptions for {sum(bool(cache.get(c)) for c in checks)} of {len(checks)} checks", flush=True)
+    return cache
 
 
 def drop_aliases(every, enabled):
@@ -99,12 +130,12 @@ def drop_aliases(every, enabled):
     guideline families that duplicate a check VTK already enables (the table online lags the binary)."""
     table = json.loads((ROOT / "rules/clang_tidy_aliases.json").read_text())["aliases"]
     tail = lambda c: c.split("-", 1)[1]
-    enabled_tails = {tail(c): c for c in enabled}
+    main_tails = {tail(c) for c in every if not c.startswith(ALIAS_FAMILIES)}
     kept = []
     for c in every:
         if c in table and table[c] in every:
             continue
-        if c not in enabled and c.startswith(ALIAS_FAMILIES[:5]) and tail(c) in enabled_tails:
+        if c not in enabled and c.startswith(ALIAS_FAMILIES) and tail(c) in main_tails:
             continue
         kept.append(c)
     return kept
@@ -116,19 +147,26 @@ def tidy_rules(repo, ref, model):
     config.write_text(text)
     enabled, every = set(list_checks(config)), list_checks()
     every = drop_aliases(every, enabled)
+    options = yaml.safe_load(text).get("CheckOptions") or []
+    for check, prefix in NEEDS_OPTIONS.items():
+        if check in enabled and not any(o["key"].startswith(prefix) for o in options):
+            enabled.discard(check)
+    docs = check_docs(every)
     old = ROOT / "data/tool_rules.json"
-    known = {r["check"]: r["rule"] for r in json.loads(old.read_text())["rules"]} if old.exists() else {}
+    known = {r["check"]: r.get("stated") or r["rule"] for r in json.loads(old.read_text())["rules"]} if old.exists() else {}
     stated = {c: known[c] for c in every if c in known and known[c] != c}
-    todo = [c for c in every if c not in stated]
+    todo = [c for c in every if c not in stated and not docs.get(c)]
     for i in range(0, len(todo), BATCH):
         names = todo[i:i + BATCH]
         stated.update((ask(model, TIDY_PROMPT.format(names="\n".join(names))) or {}).get("rules") or {})
         print(f"  stated {min(i + BATCH, len(todo))}/{len(todo)} checks", flush=True)
-    rules = [{"tool": "clang-tidy", "check": c, "enabled": c in enabled, "rule": stated.get(c) or c,
-              "evidence": ".clang-tidy enables it" if c in enabled else "not enabled in .clang-tidy",
+    rules = [{"tool": "clang-tidy", "check": c, "enabled": c in enabled, "rule": docs.get(c) or stated.get(c) or c,
+              "stated": stated.get(c),
+              "evidence": ".clang-tidy enables it" if c in enabled else
+              ("enabled in .clang-tidy but has no options configured, so it reports nothing"
+               if c in NEEDS_OPTIONS else "not enabled in .clang-tidy"),
               "url": f"https://clang.llvm.org/extra/clang-tidy/checks/{c.split('-', 1)[0]}/{c.split('-', 1)[1]}.html"}
              for c in every]
-    options = yaml.safe_load(text).get("CheckOptions") or []
     custom = next((o["value"] for o in options if o["key"].endswith("unsafe-functions.CustomFunctions")), "")
     for line in custom.splitlines():
         parts = [p.strip() for p in line.rstrip(";").split(",")]

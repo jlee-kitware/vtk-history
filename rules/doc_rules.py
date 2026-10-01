@@ -78,9 +78,9 @@ def sections(text):
     return out
 
 
-def ask(model, prompt, retries=3):
+def ask(model, prompt, retries=3, max_tokens=2048):
     body = json.dumps({"model": model, "prompt": prompt, "stream": False, "format": "json",
-                       "options": {"temperature": 0, "num_ctx": 8192}}).encode()
+                       "options": {"temperature": 0, "num_ctx": 8192, "num_predict": max_tokens}}).encode()
     for attempt in range(retries):
         try:
             req = urllib.request.Request(f"{HOST}/api/generate", body, {"Content-Type": "application/json"})

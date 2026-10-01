@@ -28,5 +28,9 @@
  {"mined": "Rebase the topic branch on master instead of merging master into the branch.", "tool": "ghostflow", "check": "root",
   "doc": "Do not push root commits; base the branch on master.", "quote": "the GitLab robot flagged this on 460 MR comments", "verdict": "unrelated"},
  {"mined": "Do not use the static keyword for declarations inside an anonymous namespace.", "tool": "clang-tidy", "check": "readability-static-definition-in-anonymous-namespace",
-  "doc": "Do not mark definitions static inside an anonymous namespace; it is redundant.", "quote": ".clang-tidy enables it (readability-static-definition-in-anonymous-namespace)", "verdict": "same"}
+  "doc": "Do not mark definitions static inside an anonymous namespace; it is redundant.", "quote": ".clang-tidy enables it (readability-static-definition-in-anonymous-namespace)", "verdict": "same"},
+ {"mined": "Place local functions, variables, and structs in an anonymous namespace.", "tool": "clang-tidy", "check": "readability-static-definition-in-anonymous-namespace",
+  "doc": "Finds static function and variable definitions in anonymous namespace. In this case, static is redundant, because anonymous namespace limits the visibility of definitions to a single translation unit.", "quote": ".clang-tidy enables it", "verdict": "unrelated"},
+ {"mined": "Use const reference for function parameters that are not modified.", "tool": "clang-tidy", "check": "readability-avoid-const-params-in-decls",
+  "doc": "Checks whether a function declaration has parameters that are top level const. const values in declarations do not affect the signature of a function, so they should not be put there.", "quote": ".clang-tidy enables it", "verdict": "unrelated"}
 ]
