@@ -69,6 +69,7 @@ Deprecated APIs used in the added lines:
 Review rules most related to this hunk:
 {rules}"""
 RULES_PER_HUNK = 6
+DOC_RULES = 3
 
 
 def git(repo, *args):
@@ -128,28 +129,54 @@ def chat(model, system, user, num_ctx=16384):
     return {"comments": []}
 
 
-def load_rules(path="data/rules_verified.json", confidence="data/rules_confidence.json", skip_automated=True):
-    """Mined rules numbered in file order; rules a tool already enforces are left to the tool."""
+def rule_key(r):
+    from hashlib import sha1
+    return sha1("|".join(sorted(r["members"])).encode()).hexdigest()[:12]
+
+
+def load_rules(path="data/rules_verified.json", confidence="data/rules_confidence.json", skip_automated=True,
+               levels=True):
+    """Mined rules numbered in file order, with confidence levels; rules a tool enforces are left to the tool."""
     rules = json.loads(Path(path).read_text())["rules"]
     for i, r in enumerate(rules, 1):
         r.setdefault("id", f"R{i:03d}")
     conf_path = Path(confidence)
-    if skip_automated and conf_path.exists():
-        from hashlib import sha1
+    if (skip_automated or levels) and conf_path.exists():
         conf = json.loads(conf_path.read_text())["rules"]
-        key = lambda r: sha1("|".join(sorted(r["members"])).encode()).hexdigest()[:12]
-        rules = [r for r in rules if not conf.get(key(r), {}).get("automated")]
+        if skip_automated:
+            rules = [r for r in rules if not conf.get(rule_key(r), {}).get("automated")]
+        if levels:
+            for r in rules:
+                c = conf.get(rule_key(r))
+                if c:
+                    r["level"], r["reviewers"] = c["level"], c["reviewers"]
     return rules
+
+
+def load_doc_rules(rules, path="data/doc_rules.json", matches="data/doc_match.json", dates="data/doc_rule_dates.json"):
+    """Rules quoted from VTK's developer docs, dated, and linked to the mined rule they restate."""
+    doc = json.loads(Path(path).read_text())["rules"]
+    when = json.loads(Path(dates).read_text())["dates"]
+    same = {}
+    by_key = {rule_key(r): r["id"] for r in rules}
+    for key, m in json.loads(Path(matches).read_text())["matches"].items():
+        if m["verdict"] == "same" and key in by_key:
+            same[m["doc"]] = by_key[key]
+    return [{**d, "date": when.get(d["id"]), "same_as": same.get(d["id"])} for d in doc]
 
 
 class Reviewer:
     def __init__(self, repo, model, rules_path="data/rules_verified.json", deprecations="data/deprecations/index.jsonl",
-                 index="data/index", rules=None):
+                 index="data/index", rules=None, doc_rules=None):
         self.repo, self.model = repo, model
         self.index = Index(index)
         self.rules = rules if rules is not None else load_rules(rules_path)
+        self.doc_rules = doc_rules or []
+        self.until = None
         self.system = SYSTEM
         self.rule_vectors = self.index.embed([f"{r['rule']} ({r.get('scope') or ''})" for r in self.rules], query=False)
+        self.doc_vectors = (self.index.embed([d["rule"] for d in self.doc_rules], query=False)
+                            if self.doc_rules else None)
         self.deprecated = {}
         for line in open(deprecations):
             rec = json.loads(line)
@@ -181,9 +208,25 @@ class Reviewer:
         return "\n".join(list(dict.fromkeys(notes))[:8]) or "(none)"
 
     def _related_rules(self, text):
-        scores = self.rule_vectors @ self.index.embed([text])[0]
-        top = scores.argsort()[::-1][:RULES_PER_HUNK]
-        return "\n".join(f"{self.rules[i]['id']}: {self.rules[i]['rule']}" for i in top)
+        query = self.index.embed([text])[0]
+        top = [self.rules[i] for i in (self.rule_vectors @ query).argsort()[::-1][:RULES_PER_HUNK]]
+        docs = [d for d in self.doc_rules if d["date"] and (not self.until or d["date"] < self.until)]
+        documented = {d["same_as"]: d["file"] for d in docs if d["same_as"]}
+        lines = []
+        for r in top:
+            tags = []
+            if r.get("level"):
+                tags.append(f"{r['level']} confidence, {r['reviewers']} reviewers")
+            if r["id"] in documented:
+                tags.append(f"also in {documented[r['id']]}")
+            lines.append(f"{r['id']}{' [' + '; '.join(tags) + ']' if tags else ''}: {r['rule']}")
+        if docs:
+            shown = {r["id"] for r in top}
+            index = {d["id"]: i for i, d in enumerate(self.doc_rules)}
+            scores = self.doc_vectors @ query
+            extra = sorted((d for d in docs if d["same_as"] not in shown), key=lambda d: -scores[index[d["id"]]])
+            lines += [f"{d['id']} [documented, {d['strength']}, {d['file']}]: {d['rule']}" for d in extra[:DOC_RULES]]
+        return "\n".join(lines)
 
     def review_hunk(self, title, path, hunk, added, numbers, until, exclude_ref):
         query = f"{path}\n{added[:1500]}"
@@ -237,6 +280,7 @@ class Reviewer:
 
     def review(self, base, head, title, until, exclude_ref=None, max_hunks=60, parallel=2, per_hunks=6):
         from concurrent.futures import ThreadPoolExecutor
+        self.until = until
         todo = list(hunks(self.repo, base, head))[:max_hunks]
         with ThreadPoolExecutor(parallel) as pool:
             results = pool.map(lambda h: self.review_hunk(title, *h, until, exclude_ref), todo)

@@ -85,7 +85,7 @@ TOOLS = [
                     "required": ["query"]}}},
     {"type": "function", "function": {"name": "file_history", "description": "Recent commits that touched a file before this merge request.",
      "parameters": {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]}}},
-    {"type": "function", "function": {"name": "rules", "description": "VTK review rules most related to a topic.",
+    {"type": "function", "function": {"name": "rules", "description": "VTK review rules most related to a topic. Rules mined from past reviews carry a confidence level from how consistently reviewers applied them and how often authors made the change; documented rules are quoted from VTK's developer guide.",
      "parameters": {"type": "object", "properties": {"topic": {"type": "string"}}, "required": ["topic"]}}},
     {"type": "function", "function": {"name": "deprecations", "description": "Whether a VTK class or method was deprecated or removed, when, and what replaces it.",
      "parameters": {"type": "object", "properties": {"symbol": {"type": "string"}}, "required": ["symbol"]}}},
@@ -115,6 +115,21 @@ def chat_tools(model, messages, num_ctx=65536):
 
 
 class ToolReviewer(Reviewer):
+    use_tool_checks = True
+    inline_rules = False
+
+    def rules_for_change(self, max_files=8, max_lines=24):
+        """Rules related to the most-changed files, so the model sees them without asking."""
+        files = sorted(self.diffs, key=lambda p: -len(self.added[p]))[:max_files]
+        seen, out = set(), []
+        for path in files:
+            for line in self._related_rules(f"{path}\n{self.diffs[path][:1500]}").splitlines():
+                rid = line.split(" ", 1)[0].rstrip(":")
+                if rid not in seen:
+                    seen.add(rid)
+                    out.append(line)
+        return "\n".join(out[:max_lines])
+
     def git(self, *args, timeout=60):
         r = subprocess.run(["git", "-C", self.repo, *args], capture_output=True, text=True, errors="replace",
                            timeout=timeout)
@@ -150,8 +165,8 @@ class ToolReviewer(Reviewer):
             if text.startswith("(git error"):
                 return text
             lines = text.splitlines()
-            start = max(1, int(args.get("start") or 1))
-            end = min(len(lines), int(args.get("end") or start + 199), start + 199)
+            start = max(1, int(float(args.get("start") or 1)))
+            end = min(len(lines), int(float(args.get("end") or start + 199)), start + 199)
             return "\n".join(f"{i:6}  {lines[i - 1]}" for i in range(start, end + 1)) or "(empty range)"
         if name == "grep":
             glob = args.get("path_glob")
@@ -173,7 +188,7 @@ class ToolReviewer(Reviewer):
             if path not in self.added:
                 return f"(rejected: {path} is not changed by this MR)"
             try:
-                line = int(args.get("line"))
+                line = int(float(args.get("line")))
             except (TypeError, ValueError):
                 return "(rejected: line must be a new-file line number)"
             if line not in self.added[path]:
@@ -213,16 +228,25 @@ class ToolReviewer(Reviewer):
         full = "\n\n".join(f"=== {p}\n{d}" for p, d in self.diffs.items())
         body = full if len(full) <= FULL_DIFF_CHARS else "(The diff is large; use read_diff for the files you want.)"
         self.findings = static_checks.check(self.repo, head, todo)
-        try:
-            self.tool_findings = tool_checks.check(self.repo, base, head)
-        except Exception as e:  # a missing formatter must not stop the review
-            self.tool_findings = [{"tool": "tool checks", "path": None, "line": None, "message": f"not run: {e}"}]
+        tools = ""
+        rules = ""
+        if self.inline_rules:
+            rules = (f"VTK review rules related to this change (confidence comes from how consistently reviewers "
+                     f"applied a rule; documented rules quote the developer guide). Comment on a break from one "
+                     f"only after checking the added code actually breaks it:\n{self.rules_for_change()}\n\n")
+        self.tool_findings = []
+        if self.use_tool_checks:
+            try:
+                self.tool_findings = tool_checks.check(self.repo, base, head)
+            except Exception as e:  # a missing formatter must not stop the review
+                self.tool_findings = [{"tool": "tool checks", "path": None, "line": None, "message": f"not run: {e}"}]
+            tools = (f"Tool checks (clang-format, codespell, whitespace, commits):\n"
+                     f"{tool_checks.render(self.tool_findings)}\n{TOOLS_NOTE}\n\n")
         messages = [{"role": "system", "content": SYSTEM},
                     {"role": "user", "content": f"Merge request: {title}\n\nChanged files:\n{listing}\n\n"
                                                 f"Automatic checks of the head commit found:\n"
                                                 f"{static_checks.render(self.findings)}\n{CHECKS_NOTE}\n\n"
-                                                f"Tool checks (clang-format, codespell, whitespace, commits):\n"
-                                                f"{tool_checks.render(self.tool_findings)}\n{TOOLS_NOTE}\n\n{body}"}]
+                                                f"{tools}{rules}{body}"}]
         nudges, seen, repeats, warned = 0, set(), 0, False
         for step in range(MAX_STEPS):
             if not warned and (repeats >= 2 or step >= MAX_STEPS - 8):

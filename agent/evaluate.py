@@ -28,7 +28,7 @@ from collections import Counter, defaultdict
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from review import HOST, Reviewer, load_rules, chat  # noqa: E402
+from review import HOST, Reviewer, load_doc_rules, load_rules, chat  # noqa: E402
 from tool_review import ToolReviewer  # noqa: E402
 
 JUDGE_SYSTEM = "You compare code review comments. Reply with JSON only."
@@ -45,13 +45,13 @@ Reply {{"same": true}} or {{"same": false}}."""
 GOLD = Path(__file__).resolve().parent / "judge_gold.json"
 
 
-def safe_rules(rules_path, examples_path, benchmark_iids, min_mrs=3):
+def safe_rules(rules_path, examples_path, benchmark_iids, min_mrs=3, plain=False):
     mr_of = {}
     for line in open(examples_path):
         ex = json.loads(line)
         mr_of[ex["discussion_id"]] = ex["mr"]["iid"]
     kept = []
-    for r in load_rules(rules_path):
+    for r in load_rules(rules_path, skip_automated=not plain, levels=not plain):
         mrs = {mr_of.get(m) for m in r["members"]} - {None}
         if len(mrs - benchmark_iids) >= min_mrs:
             kept.append(r)
@@ -110,21 +110,32 @@ def main():
     p.add_argument("--out", default="data/benchmark/runs")
     p.add_argument("--agent", choices=["hunk", "tool"], default="hunk",
                    help="hunk: one hunk at a time (review.py); tool: whole MR with tools (tool_review.py)")
+    p.add_argument("--plain-rules", action="store_true", help="no confidence levels and no skipping automated rules")
+    p.add_argument("--doc-rules", action="store_true", help="also offer rules quoted from the developer docs")
+    p.add_argument("--no-tool-checks", action="store_true")
+    p.add_argument("--inline-rules", action="store_true", help="put the related rules in the prompt (tool agent)")
+    p.add_argument("--label", help="run directory name (default: model name)")
     args = p.parse_args()
 
     bench = [json.loads(line) for line in open(args.benchmark)]
     iids = {b["mr"]["iid"] for b in bench}
     if args.limit:
         bench = random.Random(args.seed).sample(bench, args.limit)
-    rules = safe_rules(args.rules, args.examples, iids)
-    print(f"{len(bench)} MRs; {len(rules)} rules usable without benchmark evidence", flush=True)
+    rules = safe_rules(args.rules, args.examples, iids, plain=args.plain_rules)
+    docs = load_doc_rules(rules) if args.doc_rules else None
+    print(f"{len(bench)} MRs; {len(rules)} rules usable without benchmark evidence"
+          f"{f'; {len(docs)} documented rules' if docs else ''}", flush=True)
     check_judge(args.judge)
     if args.model != args.judge:
         unload(args.judge)
 
-    out = Path(args.out) / (args.model.replace(":", "_").replace("/", "_") + ("-tool" if args.agent == "tool" else ""))
+    out = Path(args.out) / (args.label or
+                            args.model.replace(":", "_").replace("/", "_") + ("-tool" if args.agent == "tool" else ""))
     out.mkdir(parents=True, exist_ok=True)
-    reviewer = (ToolReviewer if args.agent == "tool" else Reviewer)(args.repo, args.model, rules=rules)
+    (out / "config.json").write_text(json.dumps(vars(args), indent=1))
+    reviewer = (ToolReviewer if args.agent == "tool" else Reviewer)(args.repo, args.model, rules=rules, doc_rules=docs)
+    reviewer.use_tool_checks = not args.no_tool_checks
+    reviewer.inline_rules = args.inline_rules
     for n, mr in enumerate(bench, 1):
         iid = mr["mr"]["iid"]
         cache = out / f"{iid}.json"
@@ -173,6 +184,8 @@ def main():
     ratio = lambda a, b: round(a / b, 3) if b else None
     report = {
         "model": args.model, "judge": args.judge, "mrs": t["mrs"], "rules": len(rules),
+        "doc_rules": len(docs or []), "tool_checks": not args.no_tool_checks, "plain_rules": args.plain_rules,
+        "inline_rules": args.inline_rules,
         "recall_location": ratio(t["answers_located"], t["answers"]),
         "recall_content": ratio(t["answers_matched"], t["answers"]),
         "recall_content_acted_on": ratio(t["acted_matched"], t["acted"]),
