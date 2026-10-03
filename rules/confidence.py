@@ -1,6 +1,15 @@
 #!/usr/bin/env python3
 """Score each verified rule's confidence from the review record.
 
+The level comes from rules/estimate.py: the rule's follow-through rate (how often authors change
+the code when a reviewer applies it), estimated with a 90% interval by an empirical-Bayes
+beta-binomial model. high: at least an 80% chance the rate beats the average line comment;
+low: 30% or less, or the rule contradicts a configured tool or names a deprecated API.
+
+The factors below are reported beside the estimate as verification. Their points are kept for
+comparison but no longer set the level: fit as predictors, none had a weight distinguishable
+from zero (python rules/estimate.py factors).
+
 Factors:
   breadth        distinct reviewers who asked for it
   follow-through share of its line comments the author acted on (changed lines within 3 of the comment
@@ -125,8 +134,35 @@ def main():
         key = rule_key(r)
         out[key] = score(r, examples, baseline, bool(conflicts(r, by_symbol, "/home/jlee/gitsync/vtk")), docs.get(key),
                          tools.get(key), automatable.get(key))
+    sys.path.insert(0, str(ROOT / "rules"))
+    import estimate
+    est = estimate.fit()
+    for key, c in out.items():
+        e = est["rules"].get(key)
+        if not e:
+            continue
+        c["estimate"] = e
+        c["points_level"] = c["level"]
+        overrides = []
+        if (c.get("tool") or {}).get("verdict") == "contradicts":
+            overrides.append("contradicts a configured tool")
+        if c["deprecated_api"]:
+            overrides.append("names a deprecated or removed API")
+        c["level"] = "low" if overrides else e["level"]
+        c["score"] = e["p_above"]
+        if e["n"]:
+            head = (f"authors acted on an estimated {e['mean']:.0%} (90% range {e['lo']:.0%} to {e['hi']:.0%}) "
+                    f"from {e['k']} of {e['n']} line comments, {e['p_above']:.0%} chance of beating the "
+                    f"{est['baseline']:.0%} average")
+        else:
+            head = (f"no line comments to measure; estimate is the {e['mean']:.0%} typical for rules "
+                    f"(90% range {e['lo']:.0%} to {e['hi']:.0%})")
+        rest = [part for part in c["reason"].split(", ")
+                if not part.startswith(("authors changed the code", "follow-through not measurable"))]
+        c["reason"] = head + "".join(f"; {o}" for o in overrides) + "; " + ", ".join(rest)
     (ROOT / "data/rules_confidence.json").write_text(json.dumps(
-        {"baseline_follow": round(baseline, 3), "line_comments": len(line_flags), "rules": out}, indent=1))
+        {"baseline_follow": round(baseline, 3), "line_comments": len(line_flags), "prior_comments": est["kappa"],
+         "rules": out}, indent=1))
     levels = {lv: sum(v["level"] == lv for v in out.values()) for lv in ("high", "medium", "low")}
     levels["automated"] = sum(v["automated"] for v in out.values())
     levels["could be automated"] = sum(bool(v["automatable"]) for v in out.values())

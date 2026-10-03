@@ -130,40 +130,47 @@ class Store:
     def factors(self, conf):
         if not conf:
             return []
-        p = conf["points"]
-        follow = (f"{conf['follow']:.0%} of {conf['line_comments']} line comments led to a code change "
-                  f"(all line comments: {self.baseline_follow:.0%})") if conf["follow"] is not None \
-            else "Not measurable: the supporting comments are general, with no line to check"
+        e = conf.get("estimate")
+        if e and e["n"]:
+            follow = (f"Authors acted on an estimated {e['mean']:.0%} (90% range {e['lo']:.0%} to {e['hi']:.0%}), "
+                      f"from {e['k']} of {e['n']} line comments; {e['p_above']:.0%} chance this beats the "
+                      f"{self.baseline_follow:.0%} average for all line comments")
+        elif e:
+            follow = (f"No line comments to measure, so the estimate is the {e['mean']:.0%} typical for rules, "
+                      f"with a wide range ({e['lo']:.0%} to {e['hi']:.0%})")
+        else:
+            follow = "Not estimated"
+        tone = {"high": 1, "low": -1}.get(conf.get("level"), 0)
         rows = [
-            ("Reviewers", f"{conf['reviewers']} different reviewers asked for this", p["breadth"]),
-            ("Follow-through", follow, p["follow"]),
+            ("Follow-through", follow, tone),
+            ("Reviewers", f"{conf['reviewers']} different reviewers asked for this", None),
             ("Objections", f"{conf['objections']} ({conf['objection_share']:.0%} of the discussion)"
              + (", including one newer than the latest support" if conf["newer_objection"] else ""),
-             p["objections"] + p["newer_objection"]),
+             -1 if conf["objections"] else None),
             ("Consistency", "Supporting comments agree" if conf["consistent"]
-             else "Verification found some supporting comments that differ", p["consistency"]),
+             else "Verification found some supporting comments that differ", None if conf["consistent"] else -1),
         ]
         doc = conf.get("doc")
         if doc and doc["verdict"] == "same":
-            rows.append(("Developer guide", f"Stated in {doc['file']}: \u201c{doc['quote']}\u201d", p.get("documented", 0)))
+            rows.append(("Developer guide", f"Stated in {doc['file']}: \u201c{doc['quote']}\u201d", 1))
         elif doc:
             rows.append(("Developer guide", f"Conflicts with {doc['file']}: \u201c{doc['quote']}\u201d "
                                             f"({doc['why']}) Decide whether the rule is wrong or stated too broadly.",
-                         p.get("documented", 0)))
+                         -1))
         tool, auto = conf.get("tool"), conf.get("automatable")
         if tool and tool["verdict"] == "same":
             rows.append(("Tools", f"Enforced by {tool['tool']} ({tool['check']}): {tool['evidence']}. The agent "
-                                  "leaves this to the tool.", p.get("tools", 0)))
+                                  "leaves this to the tool.", 1))
         elif tool:
             rows.append(("Tools", f"Conflicts with {tool['tool']} ({tool['check']}: {tool['evidence']}): "
-                                  f"{tool['why']} The agent follows the tool and does not use this rule.",
-                         p.get("tools", 0)))
+                                  f"{tool['why']} The agent follows the tool and does not use this rule, "
+                                  "and the level is low.", -1))
         if auto:
             rows.append(("Could automate", f"clang-tidy check {auto['check']} would enforce this; VTK has it off. "
                                            f"{auto['rule']}", None))
         if conf["deprecated_api"]:
             rows.append(("Deprecated APIs", "Names an API VTK has deprecated or removed, so the level is low", None))
-        return [{"name": n, "detail": d, "points": "" if v is None else f"{v:+d}",
+        return [{"name": n, "detail": d, "points": "",
                  "tone": "neutral" if not v else "good" if v > 0 else "bad"} for n, d, v in rows]
 
     def decide(self, key, decision, rule_text, note, who=None):

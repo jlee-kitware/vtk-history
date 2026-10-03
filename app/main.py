@@ -275,10 +275,10 @@ def confidence_panel():
         with react.For(items="rule.confidence", name="f"):
             with html.Div(key=B("f.name"), style={"display": "flex", "gap": "10px", "padding": "3px 0",
                                                   "borderTop": f"1px solid {LINE}"}):
+                html.Span(style={"width": "8px", "height": "8px", "borderRadius": "4px", "flex": "none",
+                                 "marginTop": "7px", "background": B(f"f.tone === 'neutral' ? '{LINE}' : {TONE}[f.tone]")})
                 html.Span([B("f.name")], style={"width": "110px", "flex": "none", "color": MUTED})
                 html.Span([B("f.detail")], style={"flex": "1"})
-                html.Span([B("f.points")], style={"width": "28px", "textAlign": "right", "fontWeight": 600,
-                                                  "color": B(f"{TONE}[f.tone]")})
 
 
 def evidence_list(field_name, title, color="inherit"):
