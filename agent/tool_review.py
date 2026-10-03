@@ -227,7 +227,7 @@ class ToolReviewer(Reviewer):
         listing = "\n".join(f"- {p} (+{len(self.added[p])} lines)" for p in self.diffs)
         full = "\n\n".join(f"=== {p}\n{d}" for p, d in self.diffs.items())
         body = full if len(full) <= FULL_DIFF_CHARS else "(The diff is large; use read_diff for the files you want.)"
-        self.findings = static_checks.check(self.repo, head, todo)
+        self.findings = static_checks.check(self.repo, head, todo, deprecated=self.deprecated, until=until)
         tools = ""
         rules = ""
         if self.inline_rules:

@@ -8,6 +8,9 @@ Each check reports a candidate problem with the file and new-file line it concer
               classes), referenced nowhere else; public API is left alone since users call it
   unreleased  a GL/EGL handle or heap object stored in a member with no matching release
   unset       a CMake variable read in added lines that nothing in the tree sets
+  raw-new     a local raw pointer from vtkX::New(), where VTK reviewers ask for vtkNew or vtkSmartPointer
+  stdout      std::cout, std::cerr, or printf in library code, where VTK uses its logging macros
+  deprecated  a use of an API that VTK deprecated or removed before the review date
 
 Candidates are facts about the tree, not verdicts: the reviewer model confirms each one
 before commenting (a method may be defined by a macro, a member used through a template).
@@ -36,6 +39,67 @@ CMAKE_BUILTIN = re.compile(r"^(CMAKE_|PROJECT_|VTK_MODULE_|_|ARG_|WIN32$|APPLE$|
 
 
 CODE = ("*.cxx", "*.cpp", "*.h", "*.txx", "*.hxx", "*.mm")
+RAW_NEW = re.compile(r"^\s*(?:const\s+)?(vtk\w+)\s*\*\s*(\w+)\s*=\s*(vtk\w+)::New\s*\(\s*\)\s*;")
+STDOUT = re.compile(r"\bstd::(cout|cerr)\b|(?<![\w.:])printf\s*\(|fprintf\s*\(\s*stderr")
+NOT_LIBRARY = re.compile(r"(^|/)(Testing|Examples|Utilities|ThirdParty|Wrapping)/|\.py$")
+IDENT_TOKEN = re.compile(r"\b[A-Za-z_]\w{3,}\b")
+
+
+def still_current(repo, head, rec, cache={}):
+    """True when the tree at head still declares the symbol without a deprecation mark: in the class
+    header, or for a name the class does not declare itself, in any header (an inherited method)."""
+    key = (head, rec["class"], rec["symbol"])
+    if key not in cache:
+        whole = rec["class"] == rec["symbol"]
+        pattern = rf"class\s+(VTK\w*_EXPORT\s+)?{rec['class']}\b" if whole else rf"\b{rec['symbol']}\s*\("
+        current, found = declared(repo, head, pattern, f"*/{rec['class']}.h")
+        if not found and not whole:
+            current, _ = declared(repo, head, pattern, "*.h")
+        cache[key] = current
+    return cache[key]
+
+
+def declared(repo, head, pattern, pathspec):
+    """(declared without a deprecation mark, declared at all) for a pattern in headers at head."""
+    r = subprocess.run(["git", "-C", repo, "grep", "-n", "-B1", "-E", "-e", pattern, head, "--", pathspec],
+                       capture_output=True, text=True, errors="replace", timeout=120)
+    marked = lambda x: "VTK_DEPRECATED" in x or "VTK_LEGACY" in x
+    found, prev = False, ""
+    for line in r.stdout.splitlines():
+        if line == "--":
+            prev = ""
+            continue
+        body = re.sub(r"^[0-9a-f]{40}:[^:]*?[:-]\d+[:-]", "", line)
+        if re.search(pattern, body) and not body.lstrip().startswith(("//", "*")):
+            found = True
+            if not marked(body) and not (marked(prev) and not prev.rstrip().endswith(";")):
+                return True, True
+        prev = body
+    return False, found
+
+
+def deprecated_uses(path, number, text, deprecated, until, repo=None, head=None):
+    if not deprecated or "VTK_DEPRECATED" in text or "VTK_LEGACY" in text or text.lstrip().startswith("//"):
+        return []
+    out = []
+    tokens = set(IDENT_TOKEN.findall(text))
+    for name in tokens & deprecated.keys():
+        for rec in deprecated[name]:
+            when = rec["deprecated"]["date"]
+            if not when or (until and when >= until):
+                continue
+            whole_class = rec["class"] == rec["symbol"]
+            if whole_class or rec["class"] in tokens or rec["class"] == Path(path).stem:
+                if repo and still_current(repo, head, rec):
+                    continue
+                state = f"deprecated in VTK {rec['version']}" if rec.get("version") else "deprecated"
+                if rec.get("removed") and (not until or rec["removed"]["date"] < until):
+                    state += f" and {rec['outcome']}"
+                why = f" ({rec['reason']})" if rec.get("reason") else ""
+                out.append({"kind": "deprecated", "path": path, "line": number,
+                            "fact": f"{rec['class']}{'' if whole_class else '::' + rec['symbol']} is {state}{why}"})
+                break
+    return out
 
 
 def grep(repo, head, pattern, *paths, word=False):
@@ -51,11 +115,22 @@ def added_lines(hunks):
             yield path, number, text
 
 
-def check(repo, head, hunks, limit=12):
+def check(repo, head, hunks, limit=12, deprecated=None, until=None):
     findings = []
     lines = list(added_lines(hunks))
+    returned = {(path, m.group(1)) for path, _n, text in lines if (m := re.match(r"\s*return\s+(\w+)\s*;", text))}
     for path, number, text in lines:
         cls = Path(path).stem
+        if SOURCE.search(path) and (m := RAW_NEW.match(text)) and "Take" not in text and (path, m.group(2)) not in returned:
+            findings.append({"kind": "raw-new", "path": path, "line": number,
+                             "fact": f"{m.group(2)} holds a raw pointer from {m.group(3)}::New(); "
+                                     f"vtkNew<{m.group(3)}> or vtkSmartPointer would release it"})
+        if SOURCE.search(path) and not NOT_LIBRARY.search(path) and STDOUT.search(text.split("//")[0]):
+            findings.append({"kind": "stdout", "path": path, "line": number,
+                             "fact": "library code writes to stdout/stderr directly instead of using vtkLog "
+                                     "or vtkWarningMacro/vtkErrorMacro"})
+        if SOURCE.search(path):
+            findings += deprecated_uses(path, number, text, deprecated, until, repo, head)
         if HEADER.search(path) and (m := METHOD_DECL.match(text)) and "=" not in text.split("(")[0]:
             name = m.group(1)
             if name in (cls, f"~{cls}", "New") or re.search(r"=\s*(default|delete|0)\b", text):

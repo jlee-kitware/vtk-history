@@ -136,7 +136,10 @@ def rule_key(r):
 
 def load_rules(path="data/rules_verified.json", confidence="data/rules_confidence.json", skip_automated=True,
                levels=True):
-    """Mined rules numbered in file order, with confidence levels; rules a tool enforces are left to the tool."""
+    """Mined rules numbered in file order, with confidence levels.
+
+    Rules a tool enforces, or that contradict a configured tool, are left to the tool.
+    """
     rules = json.loads(Path(path).read_text())["rules"]
     for i, r in enumerate(rules, 1):
         r.setdefault("id", f"R{i:03d}")
@@ -144,7 +147,8 @@ def load_rules(path="data/rules_verified.json", confidence="data/rules_confidenc
     if (skip_automated or levels) and conf_path.exists():
         conf = json.loads(conf_path.read_text())["rules"]
         if skip_automated:
-            rules = [r for r in rules if not conf.get(rule_key(r), {}).get("automated")]
+            tool_says = lambda c: c.get("automated") or (c.get("tool") or {}).get("verdict") == "contradicts"
+            rules = [r for r in rules if not tool_says(conf.get(rule_key(r), {}))]
         if levels:
             for r in rules:
                 c = conf.get(rule_key(r))

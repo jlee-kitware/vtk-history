@@ -156,7 +156,8 @@ class Store:
                                   "leaves this to the tool.", p.get("tools", 0)))
         elif tool:
             rows.append(("Tools", f"Conflicts with {tool['tool']} ({tool['check']}: {tool['evidence']}): "
-                                  f"{tool['why']}", p.get("tools", 0)))
+                                  f"{tool['why']} The agent follows the tool and does not use this rule.",
+                         p.get("tools", 0)))
         if auto:
             rows.append(("Could automate", f"clang-tidy check {auto['check']} would enforce this; VTK has it off. "
                                            f"{auto['rule']}", None))
