@@ -173,9 +173,11 @@ class Reviews:
         from tool_review import ToolReviewer
         reviewer = ToolReviewer(self.repo, model)
         predictions, hunks, drafted = reviewer.review(base, head, title, until, exclude_ref=f"!{iid}")
+        from judge_comments import vet
+        predictions, held_back = vet(title, head, predictions)
         stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M")
         record = {"mr": iid, "base": base, "head": head, "model": model, "until": until, "hunks": hunks,
-                  "drafted": drafted, "predictions": predictions, "trace": reviewer.trace,
+                  "drafted": drafted, "predictions": predictions, "held_back": held_back, "trace": reviewer.trace,
                   "findings": reviewer.findings, "tool_findings": getattr(reviewer, "tool_findings", []),
                   "at": stamp}
         out = ROOT / "data/reviews" / f"{iid}-{head[:12]}-{model.replace(':', '_')}-{stamp}.json"

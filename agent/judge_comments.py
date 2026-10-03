@@ -145,6 +145,21 @@ class Judge:
         return self.cache[key]
 
 
+def vet(title, head, comments, model="gpt-oss:120b"):
+    """Split comments into (kept, held_back) by the judge's verdict, attaching it to each.
+
+    Comments the judge calls wrong land on lines authors later change less often than random
+    lines do; comments it accepts are changed about twice as often.
+    """
+    judge = Judge(model)
+    kept, held = [], []
+    for c in comments:
+        v = judge(title, head, c["path"], c["line"], c["comment"])
+        c = {**c, "check": v}
+        (held if v.get("correct") == "no" or v.get("worth_posting") is False else kept).append(c)
+    return kept, held
+
+
 def load_bench():
     return {str(b["mr"]["iid"]): b for b in map(json.loads, open("data/benchmark/benchmark.jsonl"))}
 

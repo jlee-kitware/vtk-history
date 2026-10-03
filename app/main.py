@@ -685,7 +685,8 @@ def suggest_reviewers():
 def load_runs(select_file=None):
     rev = REV["revs"][state.rv_rev]
     REV["runs"] = reviews.saved_runs(state.rv_mr["iid"], rev["head"])
-    state.rv_runs = [{"title": f"{r['label']} ({len(r['predictions'])} comments)", "value": i}
+    held = lambda r: f", {len(r['held_back'])} held back by the checker" if r.get("held_back") else ""
+    state.rv_runs = [{"title": f"{r['label']} ({len(r['predictions'])} comments{held(r)})", "value": i}
                      for i, r in enumerate(REV["runs"])]
     state.rv_run = len(REV["runs"]) - 1 if REV["runs"] else None
     on_run(state.rv_run, select_file)
@@ -718,7 +719,7 @@ def render_file(rv_file, **_):
     head_sha = REV["revs"][state.rv_rev]["head"] if state.rv_rev is not None else ""
     rated = reviews.ratings()
     iid = state.rv_mr["iid"] if state.rv_mr else None
-    agent = [dict(p, key=comment_key(iid, head_sha, p),
+    agent = [dict(p, key=comment_key(iid, head_sha, p), check_why=(p.get("check") or {}).get("why", ""),
                   verdict=rated.get(comment_key(iid, head_sha, p), {}).get("verdict"))
              for p in predictions if p["path"] == rv_file]
     people = [dict(c, key=f"{c['author']}{c['date']}{c['body'][:20]}") for c in REV["reviewers"]
@@ -803,6 +804,9 @@ def agent_cards(items):
                                    on_click=C(rate, f"[c.key, '{verdict}']"),
                                    style={"padding": "0 10px", "minWidth": 0, "fontSize": "0.78rem"})
             html.Div([B("c.comment")], style={"whiteSpace": "pre-wrap", "paddingLeft": "32px"})
+            with react.If(value="c.check_why"):
+                html.Div([B("'Checked: ' + c.check_why")],
+                         style={"paddingLeft": "32px", "marginTop": "4px", "color": MUTED, "fontSize": "0.8rem"})
 
 
 def people_cards(items):
