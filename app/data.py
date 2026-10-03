@@ -130,8 +130,14 @@ class Store:
     def factors(self, conf):
         if not conf:
             return []
-        e = conf.get("estimate")
-        if e and e["n"]:
+        e, a = conf.get("estimate"), conf.get("adjusted")
+        if a:
+            follow = (f"Authors acted on {a['k']} of {a['n']} line comments. Comments of the same form from the same "
+                      f"reviewers are acted on {a['expected']:.0%} of the time; this rule's comments, adjusted for "
+                      f"that, {a['adjusted']:.0%} (90% range {a['lo']:.0%} to {a['hi']:.0%}). "
+                      f"{a['p_above']:.0%} chance the rule itself raises follow-through. Unadjusted estimate: "
+                      f"{e['mean']:.0%} ({e['lo']:.0%} to {e['hi']:.0%}).")
+        elif e and e["n"]:
             follow = (f"Authors acted on an estimated {e['mean']:.0%} (90% range {e['lo']:.0%} to {e['hi']:.0%}), "
                       f"from {e['k']} of {e['n']} line comments; {e['p_above']:.0%} chance this beats the "
                       f"{self.baseline_follow:.0%} average for all line comments")

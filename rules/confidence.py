@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """Score each verified rule's confidence from the review record.
 
-The level comes from rules/estimate.py: the rule's follow-through rate (how often authors change
-the code when a reviewer applies it), estimated with a 90% interval by an empirical-Bayes
-beta-binomial model. high: at least an 80% chance the rate beats the average line comment;
-low: 30% or less, or the rule contradicts a configured tool or names a deprecated API.
+The level comes from rules/adjusted.py: the rule's effect on follow-through (how often authors
+change the code when a reviewer applies it) beyond what the reviewer and the comment's form predict,
+with a 90% interval. high: at least an 80% chance the effect is positive; low: 30% or less, or the
+rule contradicts a configured tool or names a deprecated API. rules/estimate.py's unadjusted rate
+(empirical-Bayes beta-binomial) is kept beside it.
 
 The factors below are reported beside the estimate as verification. Their points are kept for
 comparison but no longer set the level: fit as predictors, none had a weight distinguishable
@@ -135,25 +136,29 @@ def main():
         out[key] = score(r, examples, baseline, bool(conflicts(r, by_symbol, "/home/jlee/gitsync/vtk")), docs.get(key),
                          tools.get(key), automatable.get(key))
     sys.path.insert(0, str(ROOT / "rules"))
+    import adjusted
     import estimate
     est = estimate.fit()
+    adj = adjusted.fit()
     for key, c in out.items():
         e = est["rules"].get(key)
         if not e:
             continue
         c["estimate"] = e
+        a = adj["rules"].get(key)
+        c["adjusted"] = a
         c["points_level"] = c["level"]
         overrides = []
         if (c.get("tool") or {}).get("verdict") == "contradicts":
             overrides.append("contradicts a configured tool")
         if c["deprecated_api"]:
             overrides.append("names a deprecated or removed API")
-        c["level"] = "low" if overrides else e["level"]
-        c["score"] = e["p_above"]
-        if e["n"]:
-            head = (f"authors acted on an estimated {e['mean']:.0%} (90% range {e['lo']:.0%} to {e['hi']:.0%}) "
-                    f"from {e['k']} of {e['n']} line comments, {e['p_above']:.0%} chance of beating the "
-                    f"{est['baseline']:.0%} average")
+        c["level"] = "low" if overrides else estimate.level(a["p_above"]) if a else "medium"
+        c["score"] = a["p_above"] if a else 0.5
+        if a:
+            head = (f"authors acted on {a['k']} of {a['n']} line comments; adjusted for reviewer and phrasing, "
+                    f"{a['adjusted']:.0%} against {a['expected']:.0%} for comparable comments "
+                    f"(90% range {a['lo']:.0%} to {a['hi']:.0%}), {a['p_above']:.0%} chance the rule itself helps")
         else:
             head = (f"no line comments to measure; estimate is the {e['mean']:.0%} typical for rules "
                     f"(90% range {e['lo']:.0%} to {e['hi']:.0%})")
