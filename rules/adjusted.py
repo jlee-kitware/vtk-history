@@ -14,6 +14,10 @@ P(u_r > 0). tau is chosen by rolling validation.
 
 Only facts known when the comment is written enter the model (no replies, resolution, or MR outcome).
 
+With RULE_OUTCOME=addressed, rule comments use the diff-reading label (rules/addressed.py). The comment
+model is still fit on every comment's acted_on flag, then recalibrated to the new label on rule
+comments (logit p = a + b * offset) before the rule effects are fit.
+
 Usage:
   python rules/adjusted.py validate
   python rules/adjusted.py fit
@@ -21,6 +25,7 @@ Usage:
 
 import json
 import math
+import os
 import re
 import sys
 from pathlib import Path
@@ -124,10 +129,32 @@ def rule_members(rules, line_ids):
     return {r["id"]: [m for m in r["members"] if m in line_ids] for r in rules}
 
 
+ADDRESSED = os.environ.get("RULE_OUTCOME") == "addressed"
+
+
+def relabel(rules, comments):
+    """Rule comments with a yes/no diff-reading label, as copies carrying that label."""
+    labels = estimate.addressed_labels()
+    members = {m for r in rules for m in r["members"]}
+    out = {}
+    for c in comments:
+        if c["id"] in members and labels.get(c["id"]) in ("yes", "no"):
+            out[c["id"]] = dict(c, y=float(labels[c["id"]] == "yes"))
+    return out
+
+
+def recalibrate(off, y):
+    """(a, b) for logit p = a + b * off, fit by logistic regression."""
+    def loss(t):
+        eta = t[0] + t[1] * off
+        return -(y * eta - np.logaddexp(0, eta)).sum()
+    return minimize(loss, [0.0, 1.0], method="L-BFGS-B").x
+
+
 def validate(taus=TAUS):
     rules, examples, extra, rule_key = estimate.load()
     comments = load_comments()
-    by_id = {c["id"]: c for c in comments}
+    by_id = relabel(rules, comments) if ADDRESSED else {c["id"]: c for c in comments}
     members = rule_members(rules, by_id)
     cutoffs = ["2022-07-01", "2023-01-01", "2023-07-01", "2024-01-01", "2024-07-01", "2025-01-01", "2025-07-01"]
     out = {"rule only (current)": [], "comment model only": []}
@@ -137,6 +164,12 @@ def validate(taus=TAUS):
         end = cutoffs[i + 1] if i + 1 < len(cutoffs) else "2099-01-01"
         train = [c for c in comments if c["date"] < cut]
         cm = CommentModel().fit(train)
+        if ADDRESSED:
+            rc = [by_id[m] for ms in members.values() for m in ms if by_id[m]["date"] < cut]
+            cal = recalibrate(cm.offset(rc), np.array([c["y"] for c in rc]))
+            raw_offset = cm.offset
+            cm.offset = lambda rows, f=raw_offset, cal=cal: cal[0] + cal[1] * f(rows)
+            train = rc
         model, rows, X, k, n = estimate.fit_all(rules, examples, extra, rule_key, cut)
         a, b = model.posterior(X, k, n)
         prior_mean = {r["id"]: a[j] / (a[j] + b[j]) for j, (r, *_rest) in enumerate(rows)}
@@ -193,9 +226,15 @@ def validate(taus=TAUS):
 def fit(tau=TAU):
     rules, examples, extra, rule_key = estimate.load()
     comments = load_comments()
-    by_id = {c["id"]: c for c in comments}
+    by_id = relabel(rules, comments) if ADDRESSED else {c["id"]: c for c in comments}
     members = rule_members(rules, by_id)
     cm = CommentModel().fit(comments)
+    if ADDRESSED:
+        rc = [by_id[m] for ms in members.values() for m in ms]
+        cal = recalibrate(cm.offset(rc), np.array([c["y"] for c in rc]))
+        raw_offset = cm.offset
+        cm.offset = lambda rows, f=raw_offset, cal=cal: cal[0] + cal[1] * f(rows)
+        comments = rc
     base = np.mean([c["y"] for c in comments])
     nz = len(COMMENT_FEATURES)
     weights = {f: round(float(w), 3) for f, w in zip(COMMENT_FEATURES, cm.w[1:1 + nz])}

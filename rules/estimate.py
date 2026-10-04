@@ -20,6 +20,11 @@ validate fits on comments before each cutoff and predicts the next six months, p
 predictions, and compares Brier score and log loss with the points-based levels, the rule's raw
 rate, and a constant.
 
+Outcome: by default a comment counts as acted on when lines within 3 of it changed before merge.
+With RULE_OUTCOME=addressed, rule comments use data/addressed_labels.jsonl instead (a model read
+the later diff and judged whether it resolved the comment; rules/addressed.py), comments it could
+not judge are left out, and the average is taken over rule comments.
+
 Usage:
   python rules/estimate.py validate
   python rules/estimate.py factors    (fit with the evidence factors and print their weights)
@@ -28,6 +33,7 @@ Usage:
 
 import json
 import math
+import os
 import sys
 from pathlib import Path
 
@@ -116,12 +122,38 @@ def load():
             e = json.loads(line)
             examples[e["discussion_id"]] = {"kind": e["kind"], "acted": bool(e.get("acted_on")), "mr": e["mr"]["iid"],
                                             "date": e["thread"][0]["created_at"][:10], "reviewer": e["reviewer"]}
+    if os.environ.get("RULE_OUTCOME") == "addressed":
+        apply_addressed(rules, examples)
     docs = load_doc_matches()
     tools, _ = load_tool_matches()
     by_symbol = load_index(ROOT / "data/deprecations/index.jsonl")
     extra = {rule_key(r): (docs.get(rule_key(r)), tools.get(rule_key(r)),
                            bool(conflicts(r, by_symbol, "/home/jlee/gitsync/vtk"))) for r in rules}
     return rules, examples, extra, rule_key
+
+
+def addressed_labels():
+    out = {}
+    path = ROOT / "data/addressed_labels.jsonl"
+    if path.exists():
+        for line in path.open():
+            r = json.loads(line)
+            if r.get("v") == 2:
+                out[r["id"]] = r["addressed"]
+    return out
+
+
+def apply_addressed(rules, examples):
+    """Rule comments take the diff-reading label; other line comments leave the average."""
+    labels = addressed_labels()
+    members = {m for r in rules for m in r["members"]}
+    for m, e in examples.items():
+        if e["kind"] != "line":
+            continue
+        if m in members and labels.get(m) in ("yes", "no"):
+            e["acted"] = labels[m] == "yes"
+        else:
+            e["kind"] = "line-unlabeled" if m in members else "line-other"
 
 
 def view(rule, examples, cutoff=None):
