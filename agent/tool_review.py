@@ -30,6 +30,7 @@ import urllib.request
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import dev_checks  # noqa: E402
 import static_checks  # noqa: E402
 import tool_checks  # noqa: E402
 from review import HOST, Reviewer, hunks  # noqa: E402
@@ -60,6 +61,10 @@ CHECKS_NOTE = ("These are text-search results, so confirm each with grep or read
 
 TOOLS_NOTE = ("VTK's tools and GitLab robot report these themselves, so do not comment on formatting, spelling, "
               "whitespace, commit messages, or a missing release note; review what the tools cannot check.")
+
+DEV_NOTE = ("These come from compiling and configuring the change. A compile or configure error is a real "
+            "problem: find its cause in the change and say what to fix. A compiler warning or clang-tidy finding on an "
+            "added line is worth raising when it points at a bug or a convention VTK reviewers enforce.")
 
 TOO_EARLY = ("(Not yet: you have not investigated the change. Before finishing, check at least a few things: grep "
              "for the new functions, members, or options to see if they are used, implemented, and set; read the "
@@ -116,6 +121,7 @@ def chat_tools(model, messages, num_ctx=65536):
 
 class ToolReviewer(Reviewer):
     use_tool_checks = True
+    use_dev_checks = False
     inline_rules = False
 
     def rules_for_change(self, max_files=8, max_lines=24):
@@ -242,11 +248,21 @@ class ToolReviewer(Reviewer):
                 self.tool_findings = [{"tool": "tool checks", "path": None, "line": None, "message": f"not run: {e}"}]
             tools = (f"Tool checks (clang-format, codespell, whitespace, commits):\n"
                      f"{tool_checks.render(self.tool_findings)}\n{TOOLS_NOTE}\n\n")
+        dev = ""
+        self.dev_findings = []
+        if self.use_dev_checks:
+            try:
+                self.dev_findings = dev_checks.check(self.repo, base, head, todo)
+            except Exception as e:  # a broken build tree must not stop the review
+                self.dev_findings = [{"tool": "dev checks", "path": None, "line": None, "message": f"not run: {e}"}]
+            dev = (f"Developer checks on the head commit (compiler with -Wall -Wextra, clang-tidy with VTK's "
+                   f"config, CMake configure, ruff), on lines this merge request adds:\n"
+                   f"{dev_checks.render(self.dev_findings)}\n{DEV_NOTE}\n\n")
         messages = [{"role": "system", "content": SYSTEM},
                     {"role": "user", "content": f"Merge request: {title}\n\nChanged files:\n{listing}\n\n"
                                                 f"Automatic checks of the head commit found:\n"
                                                 f"{static_checks.render(self.findings)}\n{CHECKS_NOTE}\n\n"
-                                                f"{tools}{rules}{body}"}]
+                                                f"{dev}{tools}{rules}{body}"}]
         nudges, seen, repeats, warned = 0, set(), 0, False
         for step in range(MAX_STEPS):
             if not warned and (repeats >= 2 or step >= MAX_STEPS - 8):
@@ -293,6 +309,8 @@ class ToolReviewer(Reviewer):
         self.report(messages)
         k = max(2, -(-len(todo) // per_hunks))
         verified = {(f["path"], f["line"]) for f in self.findings}
+        verified |= {(f["path"], f["line"]) for f in self.dev_findings
+                     if f["path"] and ("error" in f["message"][:8] or f["tool"] == "cmake")}
         return self.select(title, self.comments, k, verified), len(todo), len(self.comments)
 
 

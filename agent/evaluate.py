@@ -114,6 +114,7 @@ def main():
     p.add_argument("--doc-rules", action="store_true", help="also offer rules quoted from the developer docs")
     p.add_argument("--no-tool-checks", action="store_true")
     p.add_argument("--inline-rules", action="store_true", help="put the related rules in the prompt (tool agent)")
+    p.add_argument("--dev-checks", action="store_true", help="compile, clang-tidy, configure, and ruff the change")
     p.add_argument("--label", help="run directory name (default: model name)")
     args = p.parse_args()
 
@@ -136,6 +137,7 @@ def main():
     reviewer = (ToolReviewer if args.agent == "tool" else Reviewer)(args.repo, args.model, rules=rules, doc_rules=docs)
     reviewer.use_tool_checks = not args.no_tool_checks
     reviewer.inline_rules = args.inline_rules
+    reviewer.use_dev_checks = args.dev_checks
     for n, mr in enumerate(bench, 1):
         iid = mr["mr"]["iid"]
         cache = out / f"{iid}.json"
@@ -146,6 +148,7 @@ def main():
         predictions, hunks, drafted = reviewer.review(mr["base_sha"], mr["head_sha"], mr["mr"]["title"], until,
                                                       exclude_ref=f"!{iid}")
         record = {"mr": mr["mr"], "until": until, "hunks": hunks, "drafted": drafted,
+                  "dev_findings": getattr(reviewer, "dev_findings", None),
                   "seconds": round(time.time() - start), "predictions": predictions,
                   "trace": getattr(reviewer, "trace", None), "score": None}
         cache.write_text(json.dumps(record, indent=1, ensure_ascii=False))
@@ -185,7 +188,7 @@ def main():
     report = {
         "model": args.model, "judge": args.judge, "mrs": t["mrs"], "rules": len(rules),
         "doc_rules": len(docs or []), "tool_checks": not args.no_tool_checks, "plain_rules": args.plain_rules,
-        "inline_rules": args.inline_rules,
+        "inline_rules": args.inline_rules, "dev_checks": args.dev_checks,
         "recall_location": ratio(t["answers_located"], t["answers"]),
         "recall_content": ratio(t["answers_matched"], t["answers"]),
         "recall_content_acted_on": ratio(t["acted_matched"], t["acted"]),
