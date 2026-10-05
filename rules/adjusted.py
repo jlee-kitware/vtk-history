@@ -125,8 +125,8 @@ def rule_effect(y, off, tau):
     return u, 1 / math.sqrt((p * (1 - p)).sum() + 1 / tau ** 2)
 
 
-def rule_members(rules, line_ids):
-    return {r["id"]: [m for m in r["members"] if m in line_ids] for r in rules}
+def rule_members(rules, line_ids, field="members"):
+    return {r["id"]: [m for m in r.get(field, r["members"]) if m in line_ids] for r in rules}
 
 
 ADDRESSED = os.environ.get("RULE_OUTCOME") == "addressed"
@@ -155,7 +155,8 @@ def validate(taus=TAUS):
     rules, examples, extra, rule_key = estimate.load()
     comments = load_comments()
     by_id = relabel(rules, comments) if ADDRESSED else {c["id"]: c for c in comments}
-    members = rule_members(rules, by_id)
+    members = rule_members(rules, by_id, "pool")
+    originals = rule_members(rules, by_id)
     cutoffs = ["2022-07-01", "2023-01-01", "2023-07-01", "2024-01-01", "2024-07-01", "2025-01-01", "2025-07-01"]
     out = {"rule only (current)": [], "comment model only": []}
     out.update({f"comment model + rule, tau {t}": [] for t in taus})
@@ -175,7 +176,7 @@ def validate(taus=TAUS):
         prior_mean = {r["id"]: a[j] / (a[j] + b[j]) for j, (r, *_rest) in enumerate(rows)}
         for r in rules:
             early = [by_id[m] for m in members[r["id"]] if by_id[m]["date"] < cut]
-            later = [by_id[m] for m in members[r["id"]] if cut <= by_id[m]["date"] < end]
+            later = [by_id[m] for m in originals[r["id"]] if cut <= by_id[m]["date"] < end]
             if not later:
                 continue
             y_e = np.array([c["y"] for c in early])
@@ -227,7 +228,7 @@ def fit(tau=TAU):
     rules, examples, extra, rule_key = estimate.load()
     comments = load_comments()
     by_id = relabel(rules, comments) if ADDRESSED else {c["id"]: c for c in comments}
-    members = rule_members(rules, by_id)
+    members = rule_members(rules, by_id, "pool")
     cm = CommentModel().fit(comments)
     if ADDRESSED:
         rc = [by_id[m] for ms in members.values() for m in ms]

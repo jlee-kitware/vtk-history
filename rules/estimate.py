@@ -25,6 +25,13 @@ With RULE_OUTCOME=addressed, rule comments use data/addressed_labels.jsonl inste
 the later diff and judged whether it resolved the comment; rules/addressed.py), comments it could
 not judge are left out, and the average is taken over rule comments.
 
+By default each rule's evidence includes the members of rules grouped with it as duplicates
+(data/rule_groups.json). RULE_POOL=matches also adds the comments rules/match_comments.py attached to
+any rule in the group (data/rule_matches.json); RULE_POOL=none uses the rule's own members only.
+Validation scores only the original members' later comments. Adding matches doubled the median
+comments per rule but made later predictions slightly worse (Brier 0.1968 vs 0.1941 adjusted), so
+they are off by default.
+
 Usage:
   python rules/estimate.py validate
   python rules/estimate.py factors    (fit with the evidence factors and print their weights)
@@ -122,6 +129,8 @@ def load():
             e = json.loads(line)
             examples[e["discussion_id"]] = {"kind": e["kind"], "acted": bool(e.get("acted_on")), "mr": e["mr"]["iid"],
                                             "date": e["thread"][0]["created_at"][:10], "reviewer": e["reviewer"]}
+    if os.environ.get("RULE_POOL", "groups") != "none":
+        pool(rules, rule_key, with_matches=os.environ.get("RULE_POOL") == "matches")
     if os.environ.get("RULE_OUTCOME") == "addressed":
         apply_addressed(rules, examples)
     docs = load_doc_matches()
@@ -130,6 +139,26 @@ def load():
     extra = {rule_key(r): (docs.get(rule_key(r)), tools.get(rule_key(r)),
                            bool(conflicts(r, by_symbol, "/home/jlee/gitsync/vtk"))) for r in rules}
     return rules, examples, extra, rule_key
+
+
+def pool(rules, rule_key, with_matches=False):
+    """Set rule["pool"]: its members plus grouped duplicates' members and matched comments."""
+    for i, r in enumerate(rules, 1):
+        r.setdefault("id", f"R{i:03d}")
+    byid = {r["id"]: r for r in rules}
+    group = {r["id"]: {r["id"]} for r in rules}
+    gpath, mpath = ROOT / "data/rule_groups.json", ROOT / "data/rule_matches.json"
+    if gpath.exists():
+        for g in json.loads(gpath.read_text())["groups"]:
+            for rid in g:
+                group[rid] = set(g)
+    matches = json.loads(mpath.read_text())["matches"] if with_matches and mpath.exists() else {}
+    for r in rules:
+        ids = set()
+        for rid in group[r["id"]]:
+            ids.update(byid[rid]["members"])
+            ids.update(matches.get(rule_key(byid[rid]), []))
+        r["pool"] = sorted(ids)
 
 
 def addressed_labels():
@@ -158,7 +187,8 @@ def apply_addressed(rules, examples):
 
 def view(rule, examples, cutoff=None):
     """The rule as it looked before a cutoff, and its line comments (acted flags) before it."""
-    members = [m for m in rule["members"] if m in examples and (cutoff is None or examples[m]["date"] < cutoff)]
+    members = [m for m in rule.get("pool", rule["members"]) if m in examples
+               and (cutoff is None or examples[m]["date"] < cutoff)]
     if not members:
         return None, []
     reviewers = {examples[m]["reviewer"] for m in members}
