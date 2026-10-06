@@ -33,6 +33,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import dev_checks  # noqa: E402
 import static_checks  # noqa: E402
 import tool_checks  # noqa: E402
+import llm  # noqa: E402
 from review import HOST, Reviewer, hunks  # noqa: E402
 
 MAX_STEPS = 40
@@ -106,6 +107,8 @@ TOOLS = [
 
 
 def chat_tools(model, messages, num_ctx=65536):
+    if llm.is_openai(model):
+        return llm.chat(model, messages, tools=TOOLS, label="review")
     payload = {"model": model, "stream": False, "messages": messages, "tools": TOOLS,
                "options": {"temperature": 0.2, "num_predict": 2048, "num_ctx": num_ctx}}
     for attempt in range(3):
@@ -206,6 +209,18 @@ class ToolReviewer(Reviewer):
 
     def report(self, messages):
         """Ask for the verified findings as structured comments, with no further tool use."""
+        if llm.is_openai(self.model):
+            msg = llm.chat(self.model, messages + [{"role": "user", "content": REPORT + "\nReply in JSON."}],
+                           json_mode=True, label="report")
+            try:
+                out = json.loads(msg["content"])
+            except json.JSONDecodeError:
+                return
+            for c in out.get("comments") or []:
+                if isinstance(c, dict) and c.get("comment"):
+                    result = self.run_tool("add_comment", c)
+                    self.trace.append({"step": "report", "tool": "add_comment", "args": c, "result": result})
+            return
         payload = {"model": self.model, "stream": False, "format": "json",
                    "messages": messages + [{"role": "user", "content": REPORT}],
                    "options": {"temperature": 0, "num_predict": 3000, "num_ctx": 65536}}

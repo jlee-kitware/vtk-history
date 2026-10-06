@@ -28,6 +28,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "index"))
 from search import Index  # noqa: E402
+import llm  # noqa: E402
 
 HOST = "http://192.168.50.23:11435"
 SKIP_PATH = re.compile(r"^ThirdParty/|/Testing/Data/|/Baseline/|\.(png|jpg|sha512|md5|vtk|vtp|vtu|vti)$")
@@ -115,6 +116,13 @@ def hunks(repo, base, head):
 
 
 def chat(model, system, user, num_ctx=16384):
+    if llm.is_openai(model):
+        msg = llm.chat(model, [{"role": "system", "content": system + "\nReply in JSON."},
+                              {"role": "user", "content": user}], json_mode=True, label="select")
+        try:
+            return json.loads(msg["content"])
+        except json.JSONDecodeError:
+            return {"comments": []}
     payload = {"model": model, "stream": False, "format": "json", "think": False,
                "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
                "options": {"temperature": 0, "num_predict": 800, "num_ctx": num_ctx}}

@@ -30,6 +30,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from review import HOST, Reviewer, load_doc_rules, load_rules, chat  # noqa: E402
 from tool_review import ToolReviewer  # noqa: E402
+import llm  # noqa: E402
 
 JUDGE_SYSTEM = "You compare code review comments. Reply with JSON only."
 JUDGE_USER = """Two review comments on the same place in a VTK merge request.
@@ -65,6 +66,8 @@ def same_concern(judge, answer, prediction):
 
 def unload(model):
     """Free a model's memory so the next large model fits on the Spark."""
+    if llm.is_openai(model):
+        return
     req = urllib.request.Request(HOST + "/api/generate", json.dumps({"model": model, "keep_alive": 0}).encode(),
                                  {"Content-Type": "application/json"})
     urllib.request.urlopen(req, timeout=120).read()
