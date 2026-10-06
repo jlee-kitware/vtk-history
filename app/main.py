@@ -34,6 +34,7 @@ from review_data import Reviews, comment_key  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "people"))
 from expertise import Expertise, reason  # noqa: E402
+from briefing import Briefing  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "agent"))
 import tool_checks  # noqa: E402
@@ -79,7 +80,7 @@ LEVEL_FG = "({high: '#1A7F37', documented: '#0B5C75', medium: '#8A5A00', low: '#
 LEVEL_BG = "({high: '#E6F4EA', documented: '#E1F0F6', medium: '#FFF3D6', low: '#FCE8EC'})"
 TONE = "({good: '#1A7F37', bad: '#B42339', neutral: '" + MUTED + "'})"
 DECISION_COLOR = {"accepted": "success", "edited": "primary", "rejected": "error", "undecided": "default"}
-TABS = [("review", "Review"), ("rules", "Rules"), ("deprecations", "Deprecations"), ("trends", "Trends"),
+TABS = [("briefing", "Briefing"), ("review", "Review"), ("rules", "Rules"), ("deprecations", "Deprecations"), ("trends", "Trends"),
         ("search", "Search")]
 MAX_ROWS = 400
 
@@ -89,7 +90,7 @@ def options(values):
 
 
 state.update({
-    "tab": "review",
+    "tab": "briefing",
     "rule_rows": [], "rule_search": "", "rule_topic": "", "rule_decision": "", "rule_level": "",
     "topics": options(sorted({r["topic"] for r in store.rules})),
     "decisions": options(["undecided", *DECISIONS]),
@@ -932,6 +933,142 @@ def review_view():
                                     people_cards("row.people")
 
 
+# ----------------------------------------------------------------------------- Briefing
+
+briefing = Briefing(reviews, expertise, store.index)
+state.update({"br_iid": "", "br_mr": None, "br": None, "br_status": "", "br_pick": None})
+
+
+def load_brief(iid=None):
+    iid = str(iid if iid is not None else state.br_iid).strip().lstrip("!")
+    record = reviews.mr(iid) if iid.isdigit() else None
+    if not record:
+        state.br_status = f"MR !{iid} is not in the mirror."
+        return
+    revs = reviews.revisions(record)
+    if not revs:
+        state.br_status = "No revision found for this MR."
+        return
+    mr = record["merge_request"]
+    state.br_mr = {"iid": mr["iid"], "title": mr["title"], "author": mr["author"]["username"],
+                   "state": mr["state"], "url": mr["web_url"], "created": mr["created_at"][:10]}
+    state.br, state.br_status = None, "Gathering history..."
+    state.flush()
+    rev = revs[-1]
+    files = reviews.diff(rev["base"], rev["head"])
+    if files is None:
+        state.br_status = "Could not fetch this MR's changes from GitLab."
+        return
+    brief = briefing.build(record, rev, files)
+    for f in brief["files"]:
+        f["name"] = f["path"].split("/")[-1]
+        for c in f["commits"]:
+            c["url"] = f"https://gitlab.kitware.com/vtk/vtk/-/commit/{c['sha']}"
+    brief["history_note"] = ("Uses history up to when this MR was opened, so it shows what was knowable then."
+                             if mr["state"] != "opened" else "Uses all history up to today.")
+    state.br, state.br_status = brief, ""
+
+
+@state.change("br_pick")
+def on_br_pick(br_pick, **_):
+    if br_pick:
+        state.br_iid = str(br_pick)
+        load_brief(br_pick)
+
+
+def br_key(key, value):
+    if key == "Enter":
+        load_brief(value)
+
+
+def section(title, items, measured):
+    with html.Div(style={**CARD, "margin": 0}):
+        html.Div([title, " ", B(f"'(' + {items}.length + ')'")], style={"fontWeight": 600, "fontSize": "0.95rem"})
+        html.Div([B(measured)], style={"color": MUTED, "fontSize": "0.76rem", "margin": "2px 0 8px",
+                                       "paddingBottom": "6px", "borderBottom": f"1px solid {LINE}"})
+        yield
+
+
+def pill(text_expr, fg, bg):
+    return html.Span([B(text_expr)], style={"fontSize": "0.72rem", "color": fg, "background": bg,
+                                            "borderRadius": "8px", "padding": "0 6px", "whiteSpace": "nowrap"})
+
+
+ROW = {"marginTop": "6px", "lineHeight": "1.45"}
+SMALL = {"color": MUTED, "fontSize": "0.76rem"}
+
+
+def briefing_view():
+    with bar():
+        field("MR number", "br_iid", 120, on_enter=br_key)
+        mui.Button("Brief me", size="small", variant="contained", on_click=C(load_brief, "[br_iid]"))
+        select("Or pick a past MR", "br_pick", "rv_queue", 360, numeric=True)
+    caption("What VTK's GitLab and Discourse history says about a merge request. Each section states how "
+            "well it held up when measured on past merge requests.", marginBottom="8px")
+    with react.If(value="br_status"):
+        html.Div([B("br_status")], style={"color": "#bc4c00", "fontSize": "0.9rem", "marginBottom": "4px"})
+    with react.If(value="br_mr"):
+        with html.Div(style={"fontSize": "0.95rem", "marginBottom": "4px"}):
+            link("'!' + br_mr.iid", "br_mr.url")
+            html.Span([" ", B("br_mr.title"), " (", B("br_mr.author"), ", ", B("br_mr.state"), ", opened ",
+                       B("br_mr.created"), ")"])
+    with react.If(value="br"):
+        caption([B("br.history_note")], marginBottom="10px")
+        with html.Div(style={"display": "grid", "gridTemplateColumns": "repeat(auto-fit, minmax(460px, 1fr))",
+                             "gap": "12px", "alignItems": "start"}):
+            with html.Div(style={"display": "flex", "flexDirection": "column", "gap": "12px"}):
+                for _ in section("Related history", "br.related", "br.measured.related"):
+                    with react.For(items="br.related", name="h"):
+                        with html.Div(key=B("h.key"), style=ROW):
+                            with html.Div(style={"display": "flex", "gap": "6px", "alignItems": "baseline"}):
+                                pill("h.kind", MUTED, "#EEF1F5")
+                                link("h.ref", "h.url")
+                                html.Span([B("h.title")])
+                                with react.If(value="h.linked"):
+                                    pill("'linked in the description'", "#1A7F37", "#E6F4EA")
+                            html.Div([B("h.date"), B("h.topic ? ' \u00b7 ' + h.topic : ''")],
+                                     style={**SMALL, "paddingLeft": "4px"})
+                for _ in section("Deprecated APIs in the added code", "br.deprecated", "br.measured.deprecated"):
+                    with react.If(value="!br.deprecated.length"):
+                        html.Div("None found.", style=SMALL)
+                    with react.For(items="br.deprecated", name="d"):
+                        with html.Div(key=B("d.key"), style=ROW):
+                            html.Span([B("d.where")], style={"fontFamily": MONO, "marginRight": "6px"})
+                            html.Span([B("d.fact")])
+            with html.Div(style={"display": "flex", "flexDirection": "column", "gap": "12px"}):
+                for _ in section("Suggested reviewers", "br.reviewers", "br.measured.reviewers"):
+                    with react.For(items="br.reviewers", name="s"):
+                        with html.Div(key=B("s.user"), style=ROW):
+                            with html.Div(style={"display": "flex", "gap": "6px", "alignItems": "center"}):
+                                html.Span([B("s.user")], style={"fontWeight": 600})
+                                with react.If(value="s.reviewed"):
+                                    pill("'reviewed it'", "#1A7F37", "#E6F4EA")
+                            html.Div([B("s.reason")], style=SMALL)
+                for _ in section("Conventions reviewers asked for on these files", "br.conventions",
+                                 "br.measured.conventions"):
+                    with react.If(value="!br.conventions.length"):
+                        html.Div("No earlier review comments on these files or directories.", style=SMALL)
+                    with react.For(items="br.conventions", name="r"):
+                        with html.Div(key=B("r.key"), style=ROW):
+                            with html.Div(style={"display": "flex", "gap": "6px", "alignItems": "baseline"}):
+                                html.Span([B("r.level")], style={
+                                    "fontSize": "0.72rem", "borderRadius": "8px", "padding": "0 6px",
+                                    "color": B(f"{LEVEL_FG}[r.level] || '{MUTED}'"),
+                                    "background": B(f"{LEVEL_BG}[r.level] || '#EEF1F5'")})
+                                html.Span([B("r.rule")])
+                            html.Div([B("r.id + ': ' + r.detail")], style=SMALL)
+                for _ in section("Recent changes to the most-changed files", "br.files", "br.measured.files"):
+                    with react.For(items="br.files", name="f"):
+                        with html.Div(key=B("f.key"), style=ROW):
+                            html.Div([B("f.name")], title=B("f.path"), style={"fontFamily": MONO, "fontWeight": 500})
+                            with react.If(value="!f.commits.length"):
+                                html.Div("New file.", style={**SMALL, "paddingLeft": "12px"})
+                            with react.For(items="f.commits", name="c"):
+                                with html.Div(key=B("c.sha"), style={**SMALL, "paddingLeft": "12px"}):
+                                    link("c.sha", "c.url")
+                                    html.Span([" ", B("c.date"), " ", B("c.who"), ": ", B("c.subject")])
+
+
 # ----------------------------------------------------------------------------- Layout
 
 with MuiLayout(server, theme=THEME) as layout:
@@ -956,7 +1093,7 @@ with MuiLayout(server, theme=THEME) as layout:
             mui.LinearProgress(style={"position": "absolute", "left": 0, "right": 0, "bottom": "-1px", "height": "2px",
                                       "visibility": B("trame__busy ? 'visible' : 'hidden'")})
         with html.Main(style={"flex": "1", "overflow": "auto", "padding": "16px 20px"}):
-            for value, view in (("review", review_view), ("rules", rules_view), ("deprecations", deprecations_view),
+            for value, view in (("briefing", briefing_view), ("review", review_view), ("rules", rules_view), ("deprecations", deprecations_view),
                                 ("trends", trends_view), ("search", search_view)):
                 with react.If(value=f"tab === '{value}'"):
                     view()
