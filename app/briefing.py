@@ -28,7 +28,7 @@ MR = re.compile(r"(?:(?<![\w/&])(?:vtk/vtk)?!|gitlab\.kitware\.com/vtk/vtk/-?/?m
 URL = re.compile(r"https?://\S+")
 
 MEASURED = {
-    "reviewers": "On past MRs, an actual reviewer was in this top 3 for 76% (66% for simply the most active people).",
+    "reviewers": "On past MRs, an actual reviewer was in this top 3 for 76% of 1,656 MRs (67% for the three most active reviewers).",
     "related": "On 300 past MRs that link an issue, this search found it in the top 5 for 84% (73% from the title "
                "alone) among about 3,700 issues; for a linked earlier MR, 51% among about 9,900.",
     "conventions": "Reference: what reviewers asked for on these files before. Which one a reviewer raises next "
