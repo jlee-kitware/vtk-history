@@ -80,8 +80,17 @@ LEVEL_FG = "({high: '#1A7F37', documented: '#0B5C75', medium: '#8A5A00', low: '#
 LEVEL_BG = "({high: '#E6F4EA', documented: '#E1F0F6', medium: '#FFF3D6', low: '#FCE8EC'})"
 TONE = "({good: '#1A7F37', bad: '#B42339', neutral: '" + MUTED + "'})"
 DECISION_COLOR = {"accepted": "success", "edited": "primary", "rejected": "error", "undecided": "default"}
-TABS = [("briefing", "Briefing"), ("review", "Review"), ("rules", "Rules"), ("deprecations", "Deprecations"), ("trends", "Trends"),
-        ("search", "Search")]
+TABS = [
+    ("briefing", "Briefing", "What VTK's history says about one merge request: related work, reviewers, conventions, "
+                             "deprecated APIs, and recent changes to its files"),
+    ("review", "Review", "A merge request's diff with the real reviewers' comments and the review agent's comments; "
+                         "rate the agent's comments"),
+    ("rules", "Rules", "Review conventions distilled from past reviewer comments, with how often authors act on "
+                       "them; accept, edit or reject each"),
+    ("deprecations", "Deprecations", "VTK APIs that were deprecated, in which version, and whether they were removed"),
+    ("trends", "Trends", "Terms, code areas and themes whose share of merge requests or forum topics rose or fell"),
+    ("search", "Search", "Search merge requests, issues, review threads, forum topics, blog posts and docs"),
+]
 MAX_ROWS = 400
 
 
@@ -119,8 +128,16 @@ def link(text_expr, url_expr):
                   style={"color": ACCENT, "textDecoration": "none", "fontWeight": 500})
 
 
-def select(label, key, items, width=200, numeric=False, empty=True):
+def tipped(text, placement="top"):
+    return mui.Tooltip(title=text, arrow=True, enter_delay=400, placement=placement)
+
+
+def select(label, key, items, width=200, numeric=False, empty=True, tip=None):
     """Native select (MUI cannot map a dynamic option list onto its own menu)."""
+    if tip:
+        with tipped(tip):
+            with html.Span(style={"display": "inline-flex"}):
+                return select(label, key, items, width, numeric, empty)
     value = f"{key} === null || {key} === undefined ? '' : {key}"
     assign = f"{key} = $event.target.value === '' ? null : Number($event.target.value)" if numeric \
         else f"{key} = $event.target.value"
@@ -133,7 +150,11 @@ def select(label, key, items, width=200, numeric=False, empty=True):
             html.Option([B("o.title")], value=B("o.value"), key=B("String(o.value)"))
 
 
-def field(label, key, width=None, on_enter=None, **kwargs):
+def field(label, key, width=None, on_enter=None, tip=None, **kwargs):
+    if tip:
+        with tipped(tip):
+            with html.Span(style={"display": "flex", "flex": "1" if not width else "none"}):
+                return field(label, key, width, on_enter, **kwargs)
     style = {"minWidth": f"{width}px", "maxWidth": f"{width}px"} if width else {"flex": "1", "minWidth": "220px"}
     extra = {"on_key_up": C(on_enter, "[$event.key, $event.target.value]")} if on_enter else {}
     return mui.TextField(label=label, size="small", value=B(key), on_change=C(f"{key} = $event.target.value"),
@@ -151,15 +172,21 @@ def bar(**style):
 
 def toggle(key, choices):
     with mui.ButtonGroup(size="small", color="primary"):
-        for label, value in choices:
-            mui.Button(label, variant=B(f"{key} === '{value}' ? 'contained' : 'outlined'"),
-                       on_click=C(f"{key} = '{value}'"))
+        for label, value, tip in choices:
+            with tipped(tip):
+                mui.Button(label, variant=B(f"{key} === '{value}' ? 'contained' : 'outlined'"),
+                           on_click=C(f"{key} = '{value}'"))
 
 
 def head(*columns):
     with mui.TableHead(), mui.TableRow():
-        for title, width in columns:
-            mui.TableCell(title, style={"width": f"{width}px"} if width else {}, key=title)
+        for title, width, *tip in columns:
+            with mui.TableCell(style={"width": f"{width}px"} if width else {}, key=title):
+                if tip:
+                    with tipped(tip[0]):
+                        html.Span(title, style={"borderBottom": f"1px dotted {MUTED}", "cursor": "help"})
+                else:
+                    html.Span(title)
 
 
 def table(height):
@@ -219,14 +246,22 @@ def rules_view():
     with mui.Box(style={"display": "flex", "gap": "12px"}):
         with mui.Box(style={"flex": "7", "minWidth": 0}):
             with bar():
-                field("Filter rules", "rule_search")
-                select("Topic", "rule_topic", "topics", 200)
-                select("Decision", "rule_decision", "decisions", 150)
-                select("Confidence", "rule_level", "levels", 150)
+                field("Filter rules", "rule_search", tip="Show rules whose text contains these words")
+                select("Topic", "rule_topic", "topics", 200, tip="The area of VTK practice a rule covers")
+                select("Decision", "rule_decision", "decisions", 150,
+                       tip="Your curation decision: accepted, edited, rejected, or not yet decided")
+                select("Confidence", "rule_level", "levels", 150,
+                       tip="How reliably authors act on a rule when a reviewer raises it, and whether a tool "
+                           "or the developer guide covers it")
             caption([B("rule_counts + ' (' + rule_shown + ')'")], marginBottom="4px")
             with table(250), mui.Table(size="small", sticky_header=True):
-                head(("Id", 60), ("Confidence", 100), ("Rule", None), ("Topic", 130), ("MRs", 50),
-                     ("Last seen", 96), ("Decision", 100))
+                head(("Id", 60, "Rule number; click a row for its evidence"),
+                     ("Confidence", 100, "High: authors act on it more often than the comment alone predicts. "
+                                         "Low: less often, or a tool or the developer guide disagrees with it"),
+                     ("Rule", None, "The convention, with the reason for its confidence level"),
+                     ("Topic", 130), ("MRs", 50, "Merge requests where a reviewer raised this rule"),
+                     ("Last seen", 96, "When a reviewer last raised it"),
+                     ("Decision", 100, "Your curation decision"))
                 with mui.TableBody():
                     with react.For(items="rule_rows", name="r"):
                         with mui.TableRow(key=B("r.key"), hover=True, selected=B("r.key === rule_key"),
@@ -306,17 +341,20 @@ def rule_detail():
                 caption([B("rule.decided_by ? rule.decided_by + ', ' + rule.decided_at : ''")])
             confidence_panel()
             field("Rule (edit before accepting to record an edited rule)", "rule_text", multiline=True,
-                  min_rows=2, full_width=True)
+                  min_rows=2, full_width=True, tip="Change the wording here, then Accept to record it as edited")
             with react.If(value="rule_text !== rule.draft"):
                 caption(["Draft: ", B("rule.draft")], marginTop="4px")
             with html.Div(style={"marginTop": "8px", "display": "flex"}):
-                field("Note (why, or what should change)", "rule_note")
+                field("Note (why, or what should change)", "rule_note", tip="Saved with your decision")
             with mui.Stack(direction="row", spacing=1, style={"marginTop": "8px"}):
-                mui.Button("Accept", color="success", variant="contained", size="small",
-                           on_click=C(decide, "['accepted']"))
-                mui.Button("Reject", color="error", variant="contained", size="small",
-                           on_click=C(decide, "['rejected']"))
-                mui.Button("Clear decision", size="small", on_click=C(decide, "['undecided']"))
+                with tipped("Record this rule as accepted, or as edited if you changed the wording"):
+                    mui.Button("Accept", color="success", variant="contained", size="small",
+                               on_click=C(decide, "['accepted']"))
+                with tipped("Record this rule as rejected"):
+                    mui.Button("Reject", color="error", variant="contained", size="small",
+                               on_click=C(decide, "['rejected']"))
+                with tipped("Remove your decision on this rule"):
+                    mui.Button("Clear decision", size="small", on_click=C(decide, "['undecided']"))
             with react.If(value="rule.rationale"):
                 html.Div(["Rationale: ", B("rule.rationale")], style={"marginTop": "12px"})
             html.Div(["Scope: ", B("rule.scope")])
@@ -361,12 +399,16 @@ def on_dep_filters(dep_outcome, dep_search, **_):
 
 def deprecations_view():
     with bar():
-        field("Search APIs, reasons, versions", "dep_search")
-        select("Status", "dep_outcome", "outcomes", 180)
+        field("Search APIs, reasons, versions", "dep_search", tip="Filter by API name, reason or VTK version")
+        select("Status", "dep_outcome", "outcomes", 180,
+               tip="present: still deprecated. removed: deleted from VTK. undeprecated: the deprecation was reversed")
     caption([B("dep_shown")], marginBottom="4px")
     with table(220), mui.Table(size="small", sticky_header=True):
-        head(("API", None), ("Version", 80), ("Outcome", 100), ("Deprecated", 160), ("Removed", 160),
-             ("Reason", None))
+        head(("API", None, "The deprecated class, method or macro; hover a name for its declaration"),
+             ("Version", 80, "The VTK version that deprecated it"),
+             ("Outcome", 100, "present: still deprecated. removed: deleted from VTK. undeprecated: reversed"),
+             ("Deprecated", 160, "When it was deprecated"), ("Removed", 160, "When it was removed, if it was"),
+             ("Reason", None, "The reason given in the deprecation"))
         with mui.TableBody():
             with react.For(items="dep_rows", name="d"):
                 with mui.TableRow(key=B("d.api + d.version"), hover=True):
@@ -414,19 +456,33 @@ def on_trend_name(trend_name, **_):
 
 def trends_view():
     with bar():
-        toggle("trend_what", [("Terms and code areas", "terms"), ("Themes", "themes")])
-        toggle("trend_source", [("Merge requests", "mr"), ("Forum", "discourse")])
-        toggle("trend_kind", [("Emerging", "emerging"), ("Past bursts", "past"), ("Fading", "fading")])
+        toggle("trend_what", [
+            ("Terms and code areas", "terms", "Single words, identifiers, and code directories (shown as dir:...)"),
+            ("Themes", "themes", "Groups of related merge requests or topics, found by clustering their text")])
+        toggle("trend_source", [
+            ("Merge requests", "mr", "Count merge requests: title, description, and the directories they changed"),
+            ("Forum", "discourse", "Count Discourse forum topics: title and first post")])
+        toggle("trend_kind", [
+            ("Emerging", "emerging", "Ratio = share in the last 2 years / share in the 4 years before"),
+            ("Past bursts", "past", "Ratio = share at its peak (4-quarter average) / share in the years around "
+                                    "the peak, for peaks that have ended"),
+            ("Fading", "fading", "Ratio = share in the first 3 years of the record / share in the last 2 years")])
         with react.If(value="trend_what === 'terms'"):
-            with html.Label(style={"display": "flex", "alignItems": "center", "fontSize": "0.9rem"}):
+            with tipped("Also list ordinary English words, which are left out by default"), \
+                    html.Label(style={"display": "flex", "alignItems": "center", "fontSize": "0.9rem"}):
                 mui.Checkbox(checked=B("trend_common"), size="small",
                              on_change=C("trend_common = $event.target.checked"))
                 html.Span("Common English words")
     with mui.Box(style={"display": "flex", "gap": "12px"}):
         with mui.Box(style={"flex": "5", "minWidth": 0}):
             with table(220), mui.Table(size="small", sticky_header=True):
-                head(("Term, code area, or theme", None), ("Ratio", 70), ("Docs", 70), ("First seen", 90),
-                     ("Peak", 80))
+                head(("Term, code area, or theme", None, "Click a row to see its share by quarter and examples"),
+                     ("Ratio", 70, "How many times larger its share of documents is in one period than in "
+                                   "the other; the Emerging, Past bursts and Fading buttons say which periods. "
+                                   "Rows are ranked by ratio and document count together"),
+                     ("Docs", 70, "Merge requests or forum topics that mention it"),
+                     ("First seen", 90, "Quarter it first appeared"),
+                     ("Peak", 80, "Quarter its share was highest"))
                 with mui.TableBody():
                     with react.For(items="trend_rows", name="t"):
                         with mui.TableRow(key=B("t.name"), hover=True, selected=B("t.name === trend_name"),
@@ -487,7 +543,8 @@ def open_topic(tid):
 
 def topic_view():
     with html.Div(style={"display": "flex", "alignItems": "center", "gap": "12px", "marginBottom": "10px"}):
-        mui.Button("Back to results", size="small", variant="outlined", on_click=C("topic = null"))
+        with tipped("Return to the search results"):
+            mui.Button("Back to results", size="small", variant="outlined", on_click=C("topic = null"))
         html.Span([B("topic.title")], style={"fontWeight": 600, "fontSize": "1.05rem"})
         html.Div(style={"flex": "1"})
         link("'Open on discourse.vtk.org'", "topic.url")
@@ -549,12 +606,15 @@ def search_view():
 
 def search_results():
     with bar():
-        field("Ask about VTK history: an API, a design question, a bug", "q", on_enter=search_key)
-        select("Kind", "q_kind", "kinds", 120)
-        field("Since (YYYY-MM-DD)", "q_since", 170)
-        field("Before (YYYY-MM-DD)", "q_until", 170)
-        mui.Button("Search", variant="contained", size="small", loading=B("searching"),
-                   on_click=C(run_search, "[q]"))
+        field("Ask about VTK history: an API, a design question, a bug", "q", on_enter=search_key,
+              tip="Matches by keyword and by meaning; press Enter to search")
+        select("Kind", "q_kind", "kinds", 120,
+               tip="Limit to one kind: review thread, merge request, issue, forum post, blog, doc, note or class")
+        field("Since (YYYY-MM-DD)", "q_since", 170, tip="Only items on or after this date")
+        field("Before (YYYY-MM-DD)", "q_until", 170, tip="Only items before this date")
+        with tipped("Run the search"):
+            mui.Button("Search", variant="contained", size="small", loading=B("searching"),
+                       on_click=C(run_search, "[q]"))
     with react.If(value="search_error"):
         mui.Alert([B("search_error")], severity="warning", style={"marginBottom": "8px"})
     with react.If(value="topic_error"):
@@ -574,7 +634,9 @@ def result_table(items):
     with mui.TableContainer(style={"border": f"1px solid {LINE}", "borderRadius": "8px", "background": SURFACE,
                                    "overflowX": "hidden"}):
         with mui.Table(size="small", style={"tableLayout": "fixed", "width": "100%"}):
-            head(("Kind", 70), ("Ref", 110), ("Date", 100), ("Author", 130), ("Title and excerpt", None))
+            head(("Kind", 70, "thread: a review discussion; mr: merge request; post: forum topic"),
+                 ("Ref", 110, "Opens the item on GitLab, Discourse or the web"), ("Date", 100), ("Author", 130),
+                 ("Title and excerpt", None, "The part of the item that best matches the search"))
             with mui.TableBody():
                 with react.For(items=items, name="s"):
                     with mui.TableRow(key=B("s.kind + s.ref + (s.path || '') + s.title"), hover=True):
@@ -589,9 +651,11 @@ def result_table(items):
                                 caption([B("s.path")])
                             caption([B("s.snippet")])
                             with react.If(value="s.topic"):
-                                mui.Button("Read topic", size="small", variant="text",
-                                           on_click=C(open_topic, "[s.topic]"),
-                                           style={"padding": "0 4px", "minWidth": 0, "marginTop": "2px"})
+                                with tipped("Read the whole forum topic, with the MRs, issues and topics it "
+                                            "links to and what in the history cites it"):
+                                    mui.Button("Read topic", size="small", variant="text",
+                                               on_click=C(open_topic, "[s.topic]"),
+                                               style={"padding": "0 4px", "minWidth": 0, "marginTop": "2px"})
 
 
 # ----------------------------------------------------------------------------- Review
@@ -799,11 +863,15 @@ def agent_cards(items):
                     html.Span([B("c.basis")], style={"color": MUTED, "fontSize": "0.8rem"})
                 html.Div(style={"flex": "1"})
                 with mui.ButtonGroup(size="small"):
-                    for verdict, color in (("valid", "success"), ("wrong", "error"), ("unsure", "inherit")):
-                        mui.Button(verdict.capitalize(), color=color,
-                                   variant=B(f"c.verdict === '{verdict}' ? 'contained' : 'outlined'"),
-                                   on_click=C(rate, f"[c.key, '{verdict}']"),
-                                   style={"padding": "0 10px", "minWidth": 0, "fontSize": "0.78rem"})
+                    for verdict, color, tip in (
+                            ("valid", "success", "The comment is correct and worth posting"),
+                            ("wrong", "error", "The comment is incorrect, or not worth a reviewer's time"),
+                            ("unsure", "inherit", "Can't tell without more context")):
+                        with tipped(tip):
+                            mui.Button(verdict.capitalize(), color=color,
+                                       variant=B(f"c.verdict === '{verdict}' ? 'contained' : 'outlined'"),
+                                       on_click=C(rate, f"[c.key, '{verdict}']"),
+                                       style={"padding": "0 10px", "minWidth": 0, "fontSize": "0.78rem"})
             html.Div([B("c.comment")], style={"whiteSpace": "pre-wrap", "paddingLeft": "32px"})
             with react.If(value="c.check_why"):
                 html.Div([B("'Checked: ' + c.check_why")],
@@ -831,7 +899,9 @@ def reviewer_panel():
     with react.If(value="rv_suggest.length"):
         with html.Details(open=True, style={"marginBottom": "8px", "padding": "8px 10px", "background": SURFACE,
                                             "border": f"1px solid {LINE}", "borderRadius": "8px", "fontSize": "0.84rem"}):
-            html.Summary("Suggested reviewers", style={"cursor": "pointer", "fontWeight": 600})
+            html.Summary("Suggested reviewers", style={"cursor": "pointer", "fontWeight": 600},
+                         title="Ranked by recent reviews and commits on these files; an actual reviewer was in "
+                               "the top 3 for 76% of past MRs")
             with react.For(items="rv_suggest", name="s"):
                 with html.Div(key=B("s.user"), style={"marginTop": "6px"}):
                     with html.Div(style={"display": "flex", "alignItems": "center", "gap": "6px"}):
@@ -846,16 +916,22 @@ def reviewer_panel():
 
 def review_view():
     with bar():
-        field("MR number", "rv_iid", 120, on_enter=mr_key)
-        mui.Button("Load", size="small", variant="outlined", on_click=C(load_mr, "[rv_iid]"))
-        select("Or pick an MR the agent reviewed", "rv_pick", "rv_queue", 360, numeric=True)
+        field("MR number", "rv_iid", 120, on_enter=mr_key, tip="Type a merge request number and press Enter")
+        with tipped("Load the MR's diff, its reviewers' comments, and any saved agent reviews"):
+            mui.Button("Load", size="small", variant="outlined", on_click=C(load_mr, "[rv_iid]"))
+        select("Or pick an MR the agent reviewed", "rv_pick", "rv_queue", 360, numeric=True,
+               tip="MRs with saved agent reviews; those with comments you have not rated come first")
         with react.If(value="rv_revisions.length"):
-            select("Revision", "rv_rev", "rv_revisions", 340, numeric=True, empty=False)
+            select("Revision", "rv_rev", "rv_revisions", 340, numeric=True, empty=False,
+                   tip="Which pushed version of the MR to show; reviewer comments appear on the version they were made on")
         with react.If(value="rv_mr"):
-            select("Agent review", "rv_run", "rv_runs", 340, numeric=True, empty=False)
-            select("Model", "rv_model", "rv_models", 210, empty=False)
-            mui.Button("Run agent", variant="contained", size="small", loading=B("rv_running"),
-                       on_click=C(run_agent))
+            select("Agent review", "rv_run", "rv_runs", 340, numeric=True, empty=False,
+                   tip="Saved agent reviews of this revision, from the benchmark or from Run agent")
+            select("Model", "rv_model", "rv_models", 210, empty=False, tip="The model Run agent uses")
+            with tipped("Review this revision now with the selected model; it takes a few minutes, and a second "
+                        "model checks each comment before it is shown"):
+                mui.Button("Run agent", variant="contained", size="small", loading=B("rv_running"),
+                           on_click=C(run_agent))
     with react.If(value="rv_mr"):
         with html.Div(style={"display": "flex", "alignItems": "center", "fontSize": "0.9rem",
                              "marginBottom": "4px"}):
@@ -878,10 +954,12 @@ def review_view():
                                                 on_click=C("rv_file = f.path"), title=B("f.path")):
                             mui.ListItemText(primary=B("f.name"), secondary=B("f.stats"))
                 with html.Div(style={"display": "flex", "marginTop": "8px"}):
-                    field("Note for your next rating (optional)", "rv_note")
+                    field("Note for your next rating (optional)", "rv_note",
+                          tip="Saved with the next Valid, Wrong or Unsure you click")
                 with react.If(value="rv_tools.length"):
                     with html.Details(open=True, style={"marginTop": "8px", "fontSize": "0.8rem"}):
                         html.Summary([B("'Tool checks (' + rv_tools.length + ')'")],
+                                     title="What VTK's formatter, spell checker and GitLab robot flag on this revision",
                                      style={"cursor": "pointer", "fontSize": "0.9rem"})
                         html.Div("What VTK's formatter, spell checker, and GitLab robot will flag on this revision.",
                                  style={"color": MUTED, "margin": "2px 0 4px"})
@@ -892,6 +970,7 @@ def review_view():
                 with react.If(value="rv_findings.length"):
                     with html.Details(style={"marginTop": "8px", "fontSize": "0.8rem"}):
                         html.Summary([B("'Static checks (' + rv_findings.length + ')'")],
+                                     title="Facts the agent was given from static checks of the head commit",
                                      style={"cursor": "pointer", "fontSize": "0.9rem"})
                         with react.For(items="rv_findings", name="f"):
                             html.Div([B("f.kind"), ": ", B("f.name"), ":", B("f.line"), " ", B("f.fact")],
@@ -899,6 +978,7 @@ def review_view():
                 with react.If(value="rv_trace.length"):
                     with html.Details(style={"marginTop": "8px", "fontSize": "0.8rem"}):
                         html.Summary([B("'Agent steps (' + rv_trace.length + ')'")],
+                                     title="Each tool the agent called while reviewing, in order",
                                      style={"cursor": "pointer", "fontSize": "0.9rem"})
                         with react.For(items="rv_trace", name="t"):
                             html.Div([B("t")], key=B("t"), style={"fontFamily": MONO})
@@ -1000,9 +1080,11 @@ SMALL = {"color": MUTED, "fontSize": "0.76rem"}
 
 def briefing_view():
     with bar():
-        field("MR number", "br_iid", 120, on_enter=br_key)
-        mui.Button("Brief me", size="small", variant="contained", on_click=C(load_brief, "[br_iid]"))
-        select("Or pick a past MR", "br_pick", "rv_queue", 360, numeric=True)
+        field("MR number", "br_iid", 120, on_enter=br_key, tip="Type a merge request number and press Enter")
+        with tipped("Gather what the history says about this MR; takes a few seconds"):
+            mui.Button("Brief me", size="small", variant="contained", on_click=C(load_brief, "[br_iid]"))
+        select("Or pick a past MR", "br_pick", "rv_queue", 360, numeric=True,
+               tip="Past MRs to try; for a closed MR the briefing uses only history from before it was opened")
     caption("What VTK's GitLab and Discourse history says about a merge request. Each section states how "
             "well it held up when measured on past merge requests.", marginBottom="8px")
     with react.If(value="br_status"):
@@ -1082,8 +1164,9 @@ with MuiLayout(server, theme=THEME) as layout:
                                                            "color": INK, "letterSpacing": "-0.01em"})
                     html.Span("from GitLab and Discourse", style={"color": MUTED, "fontSize": "0.8rem"})
                 with html.Nav(style={"display": "flex", "gap": "4px", "height": "100%"}):
-                    for value, label in TABS:
-                        html.Button(label, on_click=C(f"tab = '{value}'"), style={
+                    for value, label, tip in TABS:
+                        with tipped(tip, "bottom"):
+                          html.Button(label, on_click=C(f"tab = '{value}'"), style={
                             "border": "none", "background": "none", "cursor": "pointer", "fontFamily": SANS,
                             "fontSize": "0.9rem", "padding": "0 12px", "height": "100%",
                             "fontWeight": B(f"tab === '{value}' ? 600 : 500"),
