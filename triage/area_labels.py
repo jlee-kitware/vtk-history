@@ -6,6 +6,10 @@ Evidence for an issue, each turned into a vote per area label:
   files   directories changed by MRs whose description links the issue, scored by how
           often MRs touching each directory carry each label
   mr      area labels on the linked MRs themselves
+Labels that name a technology (area:wasm, area:webgpu, area:qt, ...) are suggested from similar issues
+or changed files only when the issue's own title or description names that technology. Their code
+overlaps with general rendering code, so similar issues alone pulled them onto desktop issues.
+
   field   the issue template's Configuration lines ("Language and version: Python 3.12",
           "Graphics backend: WebGPU"), matched exactly; HTML comments are ignored, so the
           template's own examples never match
@@ -20,7 +24,9 @@ Evaluated two ways on the issues maintainers already labeled; a suggestion is co
 when it is one of the issue's own area labels:
   leave-one-out  each labeled issue is treated as unlabeled (the backfill case)
   time split     labels from before --split only, tested on issues labeled after it
-                 (the case of a newly filed issue)
+                 (the case of a newly filed issue); issues whose label had fewer than MIN_ITEMS
+                 examples before the split are left out, since no method could suggest a label
+                 it has not seen (area:webgpu and area:VTKHDF were new then)
 
 Also counts, per top-level source directory, how many MRs changed it and how many of those
 carry any area label, which shows the code areas no label covers.
@@ -58,6 +64,17 @@ FIELD_LABELS = {
     "graphics backend": [(r"webgpu|\bdawn\b", "area:webgpu"), (r"\banari\b", "area:anari"),
                          (r"ospray|optix|ray.?trac", "area:ray-tracing")],
 }
+GATED = {
+    "area:wasm": r"wasm|webassembly|emscripten|browser|javascript|\bjs\b|vtk\.?js",
+    "area:webgpu": r"webgpu|\bdawn\b|wgpu",
+    "area:anari": r"anari",
+    "area:vr": r"openvr|openxr|\bvr\b|\bxr\b|zspace|headset|\bhmd\b|\bcave\b|virtual reality",
+    "area:qt": r"\bqt\b|qvtk|\bqml\b|qwidget|qt5|qt6",
+    "area:ray-tracing": r"ospray|optix|ray.?trac|path.?trac",
+    "area:VTKHDF": r"hdf",
+    "area:serialization": r"seriali|serdes|marshal",
+    "area:text": r"font|freetype|\btext|label|glyph",
+}
 MIN_ITEMS = 8
 K = 15
 BINS = (0.9, 0.8, 0.7, 0.6, 0.5, 0.4, 0.3, 0.0)
@@ -85,6 +102,7 @@ def load_items(mirror):
         i = json.load(open(f))["issue"]
         issues[i["iid"]] = {"title": i["title"], "state": i["state"], "created": i["created_at"][:10],
                             "url": i["web_url"], "areas": area(i.get("labels")),
+                            "text": f"{i['title']}\n{COMMENT.sub('', i.get('description') or '')}",
                             "fields": field_labels(i.get("description"))}
     for f in glob.glob(f"{mirror}/merge_requests/*.json"):
         m = json.load(open(f))["merge_request"]
@@ -138,9 +156,11 @@ class Suggester:
             return self.index.vectors[self.rowid[ref] - 1]
         return self.index.embed([text], query=False)[0] if text else None
 
-    def evidence(self, iid, text=None, fields=None):
+    def evidence(self, iid, text=None, fields=None, gate=True):
         ref = f"#{iid}"
         out = {}
+        own = text if text is not None else self.issues.get(iid, {}).get("text", "")
+        allowed = (lambda l: l not in GATED or re.search(GATED[l], own, re.I)) if gate else (lambda l: True)
         vec = self.vector(iid, text)
         if vec is not None:
             sims = self.pool_vecs @ vec
@@ -148,13 +168,14 @@ class Suggester:
             for j in np.argsort(-sims)[:K + 1]:
                 if self.pool_refs[j] != ref:
                     for l in self.pool_areas[j]:
-                        votes[l] += float(max(sims[j], 0)) ** 4
+                        if allowed(l):
+                            votes[l] += float(max(sims[j], 0)) ** 4
             out["text"] = normalize(votes)
         linked = self.links.get(iid, set())
         files = Counter()
         for m in linked:
             for d in self.dirs.get(m, ()):
-                files.update(normalize(self.dir_votes.get(d, {})))
+                files.update(normalize({l: n for l, n in self.dir_votes.get(d, {}).items() if allowed(l)}))
         if files:
             out["files"] = normalize(files)
         mr_labels = Counter(l for m in linked for l in self.mr_areas.get(m, set()))
@@ -195,13 +216,13 @@ def cutoff_for(bins, target):
     return min(ok) if ok else 1.0
 
 
-def evaluate(s, issues, labeled, labels):
+def evaluate(s, issues, labeled, labels, gate=True):
     variants = {"text": ("text",), "files": ("files",), "mr": ("mr",), "combined": ("text", "files", "mr", "field")}
     scored = {name: [] for name in variants}
     per_label = defaultdict(lambda: {"true": 0, "suggested": 0, "correct": 0})
     for i in labeled:
         truth = issues[i]["areas"] & labels
-        ev = s.evidence(i)
+        ev = s.evidence(i, gate=gate)
         for name, use in variants.items():
             top, conf, _ = s.combine(ev, use)
             if top:
@@ -258,10 +279,14 @@ def main():
     majority = Counter(l for i in labeled for l in issues[i]["areas"] & labels).most_common(1)[0][0]
     scored, per_label = evaluate(s, issues, labeled, labels)
     bins = precision_table(scored["combined"])
-    later = [i for i in labeled if issues[i]["created"] >= args.split]
-    split_scored, _ = evaluate(Suggester(index, issues, mrs, links, dirs, labels, before=args.split),
-                               issues, later, labels)
+    early = Suggester(index, issues, mrs, links, dirs, labels, before=args.split)
+    known = Counter(l for a in early.pool_areas for l in a)
+    after_split = [i for i in labeled if issues[i]["created"] >= args.split]
+    later = [i for i in after_split if all(known[l] >= MIN_ITEMS for l in issues[i]["areas"] & labels)]
+    split_scored, _ = evaluate(early, issues, later, labels)
     split_bins = precision_table(split_scored["combined"])
+    ungated = {"backfill": precision_table(evaluate(s, issues, labeled, labels, gate=False)[0]["combined"]),
+               "new": precision_table(evaluate(early, issues, later, labels, gate=False)[0]["combined"])}
     cut = max(cutoff_for(bins, args.target), cutoff_for(split_bins, args.target))
     split_above = [ok for conf, ok in split_scored["combined"] if conf >= cut]
 
@@ -273,12 +298,14 @@ def main():
                             "precision": round(sum(ok for _, ok in r) / len(r), 3) if r else None}
                      for name, r in scored.items()},
         "by_confidence": bins,
-        "time_split": {"split": args.split, "issues": len(later), "by_confidence": split_bins,
+        "time_split": {"split": args.split, "issues": len(later), "left_out": len(after_split) - len(later),
+                       "new_labels": sorted(l for l in labels if known[l] < MIN_ITEMS), "by_confidence": split_bins,
                        "at_cutoff": {"issues": len(split_above),
                                      "precision": round(sum(split_above) / len(split_above), 3) if split_above else None}},
         "by_label": {l: dict(v, precision=round(v["correct"] / v["suggested"], 3) if v["suggested"] else None,
                              recall=round(v["correct"] / v["true"], 3) if v["true"] else None)
                      for l, v in sorted(per_label.items(), key=lambda x: -x[1]["true"])},
+        "without_gate": ungated,
         "issues_with_template_fields": sum(bool(v["fields"]) for v in issues.values()),
     }
 
@@ -350,7 +377,9 @@ def main():
                   f"{args.target:.0%} of the time here and in the time split below. Below it the issue is marked "
                   f"\"{NO_FIT}\".", "",
               f"## Time split (new issues)", "",
-              f"Labels from before {args.split} only, tested on the {len(later)} labeled issues created after it.", "",
+              f"Labels from before {args.split} only, tested on the {len(later)} labeled issues created after it "
+              f"whose labels already had {MIN_ITEMS} examples; {len(after_split) - len(later)} issues labeled "
+              f"{', '.join(report['time_split']['new_labels'])} are left out.", "",
               "| Confidence at least | Issues | Top suggestion correct |", "| --- | --- | --- |"]
     lines += [f"| {b['confidence_at_least']:.1f} | {b['issues']} | {pct(b['precision'])} |" for b in split_bins]
     lines += ["", f"At the cutoff: {report['time_split']['at_cutoff']['issues']} issues, "
