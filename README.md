@@ -16,7 +16,7 @@ This work is part of an NIH-funded effort on VTK maintenance.
 | Review conventions | 217 conventions distilled from 1,490 review comments, each with an estimate of how often authors act on it | Brier score 0.194 against 0.218 for the base rate, on held-out comments |
 | Clang-tidy candidates | Conventions that an existing clang-tidy check could enforce | 25 conventions, behind 15% of convention comments, match checks VTK does not enable |
 | Deprecations | Every API VTK deprecated: when, why, in which MR, and whether it was removed | |
-| Area label suggestions | Suggests an `area:` label for issues that have none, from the most similar labeled issues and MRs and the files changed by MRs that link the issue | The top suggestion is one of the maintainers' labels for 83% of 720 labeled issues, against 42% for always suggesting `area:build`; 96% for the 242 suggested with confidence 0.7 or more |
+| Area label suggestions | Suggests an `area:` label for issues that have none, from the most similar labeled issues and MRs, the files changed by MRs that link the issue, and the issue template's Language and Graphics backend lines; below a confidence cutoff (0.6) the issue is marked "no label fits" | Above the cutoff, right for 94% of 387 labeled issues tested one at a time, and 90% of 80 issues filed since 2024 using only labels from before; always suggesting `area:build` is right for 42% |
 | GitLab labels | Search filtered by label, labels shown on search results and in the briefing | |
 | Trends | Terms, code areas, themes and GitLab `area:` and `lang:` labels whose share of MRs, issues or forum topics rose or fell | |
 | Search | Keyword and meaning search over MRs, issues, review threads, forum posts, blog posts, docs and release notes | |
@@ -76,7 +76,7 @@ The steps run in this order. `refresh.sh` runs all of them after the first sync 
 7. **Trends.** `python trends/discover_terms.py` and `python trends/discover_themes.py`
 8. **Search index.** `python index/build_index.py` (about 104,000 documents; embedding takes a few hours on one GPU)
 9. **Commit index.** `python index/commits.py build`, then `python index/commits.py embed` (about 80,000 commits, about 4 hours)
-10. **Labels.** `python trends/label_trends.py` for label trends, and `python triage/area_labels.py` for area label suggestions (`data/labels/area_suggestions.csv`, one row per unlabeled issue with the suggested label, its confidence, and the precision measured at that confidence). The search index stores GitLab labels when it is built; `python index/labels.py` adds them to an index built before that.
+10. **Labels.** `python trends/label_trends.py` for label trends, and `python triage/area_labels.py` for area label suggestions (`data/labels/area_suggestions.csv`, one row per unlabeled issue with the suggested label or "no label fits", the best guess, its confidence, and the precision measured at that confidence; `--issue N` suggests for one issue). The search index stores GitLab labels when it is built; `python index/labels.py` adds them to an index built before that.
 
 ## Running the app
 

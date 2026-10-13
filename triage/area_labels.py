@@ -1,25 +1,36 @@
 #!/usr/bin/env python3
-"""Suggest GitLab area labels (area:rendering, area:build, ...) for VTK issues that have none.
+"""Suggest GitLab labels (area:rendering, lang:python, ...) for VTK issues that have none.
 
-Evidence for an issue, each turned into a vote per label:
+Evidence for an issue, each turned into a vote per area label:
   text    the most similar labeled issues and MRs by embedding (data/index/vectors.npy)
   files   directories changed by MRs whose description links the issue, scored by how
           often MRs touching each directory carry each label
   mr      area labels on the linked MRs themselves
+  field   the issue template's Configuration lines ("Language and version: Python 3.12",
+          "Graphics backend: WebGPU"), matched exactly; HTML comments are ignored, so the
+          template's own examples never match
 
-Evaluated by leave-one-out on the issues maintainers already labeled: each labeled issue
-is treated as unlabeled, and the top suggestion counts as correct when it is one of the
-issue's own area labels. Precision is reported per label and per confidence level, so a
-reviewer can choose a threshold before applying anything.
+The closest match is suggested only when its confidence reaches a cutoff chosen so that,
+on issues maintainers already labeled, suggestions at or above it were right at least
+--target of the time in both evaluations below. Below the cutoff the issue is marked "no label fits", with the
+best guess kept in its own column, since an issue there often belongs to an area that
+has no label yet.
 
-Also counts, per top-level source directory, how many MRs changed it and how many of those carry
-any area label, which shows the code areas no label covers.
+Evaluated two ways on the issues maintainers already labeled; a suggestion is correct
+when it is one of the issue's own area labels:
+  leave-one-out  each labeled issue is treated as unlabeled (the backfill case)
+  time split     labels from before --split only, tested on issues labeled after it
+                 (the case of a newly filed issue)
+
+Also counts, per top-level source directory, how many MRs changed it and how many of those
+carry any area label, which shows the code areas no label covers.
 
 Writes data/labels/area_eval.json, data/labels/AREA_LABELS.md, and
 data/labels/area_suggestions.csv (one row per unlabeled issue, highest confidence first).
 
 Usage:
-  python triage/area_labels.py
+  python triage/area_labels.py                  # evaluate and write suggestions
+  python triage/area_labels.py --issue 19512    # suggest for one issue
 """
 
 import argparse
@@ -39,13 +50,33 @@ sys.path.insert(0, str(ROOT / "index"))
 from search import Index  # noqa: E402
 
 ISSUE = re.compile(r"(?:(?<![\w/&])(?:vtk/vtk)?#|gitlab\.kitware\.com/vtk/vtk/-?/?issues/)(\d{2,6})\b")
+COMMENT = re.compile(r"<!--.*?-->", re.S)
+FIELD = re.compile(r"^[\s*\-]*\**\s*(language[^:\n]*|graphics backend[^:\n]*):\**\s*(.*)$", re.I | re.M)
+FIELD_LABELS = {
+    "language": [(r"\bpython\b", "lang:python"), (r"\bjava\b(?!script)", "lang:java"),
+                 (r"javascript|webassembly|\bwasm\b|emscripten", "area:wasm")],
+    "graphics backend": [(r"webgpu|\bdawn\b", "area:webgpu"), (r"\banari\b", "area:anari"),
+                         (r"ospray|optix|ray.?trac", "area:ray-tracing")],
+}
 MIN_ITEMS = 8
 K = 15
-BINS = (0.9, 0.8, 0.7, 0.6, 0.5, 0.4, 0.0)
+BINS = (0.9, 0.8, 0.7, 0.6, 0.5, 0.4, 0.3, 0.0)
+NO_FIT = "no label fits"
 
 
 def area(labels):
     return {l for l in labels or [] if l.startswith("area:")}
+
+
+def field_labels(description):
+    """Labels named exactly by the template's Configuration lines."""
+    out = set()
+    for name, value in FIELD.findall(COMMENT.sub("", description or "")):
+        key = "language" if name.lower().startswith("language") else "graphics backend"
+        for pattern, label in FIELD_LABELS[key]:
+            if re.search(pattern, value, re.I):
+                out.add(label)
+    return out
 
 
 def load_items(mirror):
@@ -53,10 +84,11 @@ def load_items(mirror):
     for f in glob.glob(f"{mirror}/issues/*.json"):
         i = json.load(open(f))["issue"]
         issues[i["iid"]] = {"title": i["title"], "state": i["state"], "created": i["created_at"][:10],
-                            "url": i["web_url"], "areas": area(i.get("labels"))}
+                            "url": i["web_url"], "areas": area(i.get("labels")),
+                            "fields": field_labels(i.get("description"))}
     for f in glob.glob(f"{mirror}/merge_requests/*.json"):
         m = json.load(open(f))["merge_request"]
-        mrs[m["iid"]] = area(m.get("labels"))
+        mrs[m["iid"]] = {"areas": area(m.get("labels")), "created": m["created_at"][:10]}
         for n in ISSUE.findall(f"{m['title']}\n{m.get('description') or ''}"):
             links[int(n)].add(m["iid"])
     return issues, mrs, links
@@ -79,29 +111,39 @@ def normalize(votes):
 
 
 class Suggester:
-    def __init__(self, index, issues, mrs, links, dirs, labels):
-        self.labels = labels
+    """Votes from labeled issues and MRs created before `before` (all of them when None)."""
+
+    def __init__(self, index, issues, mrs, links, dirs, labels, before=None):
+        self.index, self.labels = index, labels
         self.issues, self.mrs, self.links, self.dirs = issues, mrs, links, dirs
-        rowid = {r["ref"]: r["rowid"] for r in index.con.execute(
+        ok = (lambda d: d < before) if before else (lambda d: True)
+        self.rowid = {r["ref"]: r["rowid"] for r in index.con.execute(
             "SELECT rowid, ref FROM docs WHERE kind IN ('issue', 'mr')")}
-        pool = [(f"#{i}", v["areas"]) for i, v in issues.items() if v["areas"] & labels] + \
-               [(f"!{m}", a) for m, a in mrs.items() if a & labels]
-        pool = [(ref, a & labels) for ref, a in pool if ref in rowid]
+        pool = [(f"#{i}", v["areas"]) for i, v in issues.items() if v["areas"] & labels and ok(v["created"])] + \
+               [(f"!{m}", v["areas"]) for m, v in mrs.items() if v["areas"] & labels and ok(v["created"])]
+        pool = [(ref, a & labels) for ref, a in pool if ref in self.rowid]
         self.pool_refs = [ref for ref, _ in pool]
         self.pool_areas = [a for _, a in pool]
-        self.pool_vecs = index.vectors[[rowid[ref] - 1 for ref in self.pool_refs]]
-        self.vec = {ref: index.vectors[rowid[ref] - 1] for ref in (f"#{i}" for i in issues) if ref in rowid}
+        self.pool_vecs = index.vectors[[self.rowid[ref] - 1 for ref in self.pool_refs]]
+        self.mr_areas = {m: v["areas"] & labels for m, v in mrs.items() if ok(v["created"])}
         self.dir_votes = defaultdict(Counter)
-        for m, a in mrs.items():
+        for m, a in self.mr_areas.items():
             for d in dirs.get(m, ()):
-                for l in a & labels:
+                for l in a:
                     self.dir_votes[d][l] += 1
 
-    def evidence(self, iid):
+    def vector(self, iid, text=None):
+        ref = f"#{iid}"
+        if ref in self.rowid:
+            return self.index.vectors[self.rowid[ref] - 1]
+        return self.index.embed([text], query=False)[0] if text else None
+
+    def evidence(self, iid, text=None, fields=None):
         ref = f"#{iid}"
         out = {}
-        if ref in self.vec:
-            sims = self.pool_vecs @ self.vec[ref]
+        vec = self.vector(iid, text)
+        if vec is not None:
+            sims = self.pool_vecs @ vec
             votes = Counter()
             for j in np.argsort(-sims)[:K + 1]:
                 if self.pool_refs[j] != ref:
@@ -115,13 +157,19 @@ class Suggester:
                 files.update(normalize(self.dir_votes.get(d, {})))
         if files:
             out["files"] = normalize(files)
-        mr_labels = Counter(l for m in linked for l in self.mrs.get(m, set()) & self.labels)
+        mr_labels = Counter(l for m in linked for l in self.mr_areas.get(m, set()))
         if mr_labels:
             out["mr"] = normalize(mr_labels)
+        fields = self.issues.get(iid, {}).get("fields", set()) if fields is None else fields
+        if {l for l in fields if l.startswith("area:")}:
+            out["field"] = {l: 1.0 for l in fields if l.startswith("area:")}
         return out
 
     @staticmethod
     def combine(ev, use=("text", "files", "mr")):
+        if "field" in ev and "field" in use:
+            ranked = sorted(ev["field"].items())
+            return ranked[0][0], 1.0, ranked
         votes = Counter()
         for name in use:
             votes.update(ev.get(name, {}))
@@ -141,22 +189,14 @@ def precision_table(results):
     return rows
 
 
-def main():
-    p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--mirror", default=str(ROOT / "data/vtk-history"))
-    p.add_argument("--out", default=str(ROOT / "data/labels"))
-    args = p.parse_args()
+def cutoff_for(bins, target):
+    """The lowest confidence whose suggestions at or above it reach the target precision."""
+    ok = [b["confidence_at_least"] for b in bins if b["precision"] is not None and b["precision"] >= target]
+    return min(ok) if ok else 1.0
 
-    index = Index(str(ROOT / "data/index"))
-    issues, mrs, links = load_items(args.mirror)
-    counts = Counter(l for v in issues.values() for l in v["areas"]) + Counter(l for a in mrs.values() for l in a)
-    labels = {l for l, n in counts.items() if n >= MIN_ITEMS}
-    dirs = mr_dirs(ROOT / "data/index/commits.sqlite")
-    s = Suggester(index, issues, mrs, links, dirs, labels)
 
-    labeled = [i for i, v in issues.items() if v["areas"] & labels]
-    majority = Counter(l for i in labeled for l in issues[i]["areas"] & labels).most_common(1)[0][0]
-    variants = {"text": ("text",), "files": ("files",), "mr": ("mr",), "combined": ("text", "files", "mr")}
+def evaluate(s, issues, labeled, labels):
+    variants = {"text": ("text",), "files": ("files",), "mr": ("mr",), "combined": ("text", "files", "mr", "field")}
     scored = {name: [] for name in variants}
     per_label = defaultdict(lambda: {"true": 0, "suggested": 0, "correct": 0})
     for i in labeled:
@@ -166,30 +206,81 @@ def main():
             top, conf, _ = s.combine(ev, use)
             if top:
                 scored[name].append((conf, top in truth))
-        top, _, _ = s.combine(ev)
+        top, _, _ = s.combine(ev, variants["combined"])
         for l in truth:
             per_label[l]["true"] += 1
         if top:
             per_label[top]["suggested"] += 1
             per_label[top]["correct"] += top in truth
+    return scored, per_label
 
-    combined = scored["combined"]
+
+def setup(mirror):
+    index = Index(str(ROOT / "data/index"))
+    issues, mrs, links = load_items(mirror)
+    counts = Counter(l for v in issues.values() for l in v["areas"]) + \
+        Counter(l for v in mrs.values() for l in v["areas"])
+    labels = {l for l, n in counts.items() if n >= MIN_ITEMS}
+    return index, issues, mrs, links, mr_dirs(ROOT / "data/index/commits.sqlite"), labels
+
+
+def one_issue(args):
+    index, issues, mrs, links, dirs, labels = setup(args.mirror)
+    s = Suggester(index, issues, mrs, links, dirs, labels)
+    record = json.load(open(f"{args.mirror}/issues/{args.issue}.json"))["issue"]
+    text = f"Issue #{record['iid']}: {record['title']}\n\n{record.get('description') or ''}"
+    fields = field_labels(record.get("description"))
+    top, conf, ranked = s.combine(s.evidence(args.issue, text, fields), ("text", "files", "mr", "field"))
+    report = json.loads((Path(args.out) / "area_eval.json").read_text())
+    cut = report["cutoff"]
+    print(f"#{args.issue} {record['title']}\n  current labels: {', '.join(record.get('labels') or []) or 'none'}")
+    print(f"  suggested: {top if conf >= cut else NO_FIT} (confidence {conf:.2f}, cutoff {cut})")
+    print("  ranked: " + ", ".join(f"{l} {v / sum(x for _, x in ranked):.2f}" for l, v in ranked[:4]))
+    lang = sorted(l for l in fields if l.startswith("lang:"))
+    if lang:
+        print(f"  from the template: {', '.join(lang)}")
+
+
+def main():
+    p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    p.add_argument("--mirror", default=str(ROOT / "data/vtk-history"))
+    p.add_argument("--out", default=str(ROOT / "data/labels"))
+    p.add_argument("--target", type=float, default=0.9, help="precision the cutoff must reach")
+    p.add_argument("--split", default="2024-01-01", help="date for the time-split evaluation")
+    p.add_argument("--issue", type=int, help="suggest labels for this issue and stop")
+    args = p.parse_args()
+    if args.issue:
+        return one_issue(args)
+
+    index, issues, mrs, links, dirs, labels = setup(args.mirror)
+    s = Suggester(index, issues, mrs, links, dirs, labels)
+    labeled = [i for i, v in issues.items() if v["areas"] & labels]
+    majority = Counter(l for i in labeled for l in issues[i]["areas"] & labels).most_common(1)[0][0]
+    scored, per_label = evaluate(s, issues, labeled, labels)
+    bins = precision_table(scored["combined"])
+    later = [i for i in labeled if issues[i]["created"] >= args.split]
+    split_scored, _ = evaluate(Suggester(index, issues, mrs, links, dirs, labels, before=args.split),
+                               issues, later, labels)
+    split_bins = precision_table(split_scored["combined"])
+    cut = max(cutoff_for(bins, args.target), cutoff_for(split_bins, args.target))
+    split_above = [ok for conf, ok in split_scored["combined"] if conf >= cut]
+
     report = {
         "labeled_issues": len(labeled), "labels": sorted(labels), "majority_label": majority,
         "majority_precision": round(sum(majority in issues[i]["areas"] for i in labeled) / len(labeled), 3),
+        "target": args.target, "cutoff": cut,
         "variants": {name: {"issues_with_evidence": len(r),
                             "precision": round(sum(ok for _, ok in r) / len(r), 3) if r else None}
                      for name, r in scored.items()},
-        "by_confidence": precision_table(combined),
+        "by_confidence": bins,
+        "time_split": {"split": args.split, "issues": len(later), "by_confidence": split_bins,
+                       "at_cutoff": {"issues": len(split_above),
+                                     "precision": round(sum(split_above) / len(split_above), 3) if split_above else None}},
         "by_label": {l: dict(v, precision=round(v["correct"] / v["suggested"], 3) if v["suggested"] else None,
                              recall=round(v["correct"] / v["true"], 3) if v["true"] else None)
                      for l, v in sorted(per_label.items(), key=lambda x: -x[1]["true"])},
+        "issues_with_template_fields": sum(bool(v["fields"]) for v in issues.values()),
     }
-    out = Path(args.out)
-    out.mkdir(parents=True, exist_ok=True)
-    json.dump(report, open(out / "area_eval.json", "w"), indent=1)
-
-    bins = report["by_confidence"]
 
     def expected(conf):
         return next(b["precision"] for b in bins if conf >= b["confidence_at_least"])
@@ -199,52 +290,73 @@ def main():
         if v["areas"]:
             continue
         ev = s.evidence(i)
-        top, conf, ranked = s.combine(ev)
+        top, conf, ranked = s.combine(ev, ("text", "files", "mr", "field"))
         if not top:
             continue
-        rows.append({"issue": i, "state": v["state"], "created": v["created"], "suggested": top,
-                     "confidence": round(conf, 2), "expected_precision": expected(conf),
+        fits = conf >= cut
+        rows.append({"issue": i, "state": v["state"], "created": v["created"],
+                     "suggested": top if fits else NO_FIT, "best_guess": top, "confidence": round(conf, 2),
+                     "expected_precision": expected(conf),
                      "runner_up": ranked[1][0] if len(ranked) > 1 else "",
-                     "evidence": "+".join(k for k in ("text", "files", "mr") if top in ev.get(k, {})),
+                     "lang_from_template": " ".join(sorted(l for l in v["fields"] if l.startswith("lang:"))),
+                     "evidence": "+".join(k for k in ("field", "text", "files", "mr") if top in ev.get(k, {})),
                      "linked_mrs": " ".join(f"!{m}" for m in sorted(links.get(i, ()))),
                      "title": v["title"], "url": v["url"]})
     rows.sort(key=lambda r: (-r["confidence"], r["state"] != "opened", r["issue"]))
+    out = Path(args.out)
+    out.mkdir(parents=True, exist_ok=True)
     with open(out / "area_suggestions.csv", "w", newline="") as f:
         w = csv.DictWriter(f, fieldnames=list(rows[0]))
         w.writeheader()
         w.writerows(rows)
 
-    lines = ["# Area label suggestions: evaluation", "",
-             f"Leave-one-out on {len(labeled)} issues that already carry one of {len(labels)} area labels "
-             f"(labels used on at least {MIN_ITEMS} issues or MRs). A suggestion is correct when it is one of the "
-             f"issue's own area labels. Always suggesting {majority} is correct for "
-             f"{report['majority_precision']:.0%}.", "",
-             "| Evidence | Issues with this evidence | Top suggestion correct |", "| --- | --- | --- |"]
-    for name, v in report["variants"].items():
-        lines.append(f"| {name} | {v['issues_with_evidence']} | "
-                     + (f"{v['precision']:.0%} |" if v["precision"] is not None else "|"))
-    lines += ["", "| Confidence at least | Issues | Top suggestion correct |", "| --- | --- | --- |"]
-    for b in bins:
-        lines.append(f"| {b['confidence_at_least']:.1f} | {b['issues']} | "
-                     + (f"{b['precision']:.0%} |" if b["precision"] is not None else "|"))
-    lines += ["", "| Label | Labeled issues | Suggested | Precision | Recall |", "| --- | --- | --- | --- | --- |"]
-    for l, v in report["by_label"].items():
-        prec = f"{v['precision']:.0%}" if v["precision"] is not None else ""
-        rec = f"{v['recall']:.0%}" if v["recall"] is not None else ""
-        lines.append(f"| {l} | {v['true']} | {v['suggested']} | {prec} | {rec} |")
     tops, tops_labeled = Counter(), Counter()
     for m, ds in dirs.items():
         for t in {d.split("/")[0] for d in ds}:
             tops[t] += 1
-            tops_labeled[t] += bool(mrs.get(m))
+            tops_labeled[t] += bool(mrs.get(m, {}).get("areas"))
     report["directories"] = {t: {"mrs": n, "with_area_label": tops_labeled[t]} for t, n in tops.most_common(15)}
+    fit = [r for r in rows if r["suggested"] != NO_FIT]
+    report["suggestions"] = {"unlabeled": len(rows), "suggested": len(fit), "no_fit": len(rows) - len(fit),
+                             "open_suggested": sum(r["state"] == "opened" for r in fit),
+                             "open_no_fit": sum(r["state"] == "opened" and r["suggested"] == NO_FIT for r in rows)}
     json.dump(report, open(out / "area_eval.json", "w"), indent=1)
-    lines += ["", "Coverage by code area: merge requests that changed each top-level directory, and the share "
-                  "carrying any area label.", "", "| Directory | MRs | With an area label |", "| --- | --- | --- |"]
-    for t, n in tops.most_common(15):
-        lines.append(f"| {t} | {n} | {tops_labeled[t] / n:.0%} |")
-    opened = sum(r["state"] == "opened" for r in rows)
-    lines += ["", f"Suggestions written for {len(rows)} unlabeled issues ({opened} open) to area_suggestions.csv.", ""]
+
+    pct = lambda x: f"{x:.0%}" if x is not None else ""
+    lines = ["# Area label suggestions: evaluation", "",
+             f"Tested on {len(labeled)} issues that already carry one of {len(labels)} area labels "
+             f"(labels used on at least {MIN_ITEMS} issues or MRs). A suggestion is correct when it is one of the "
+             f"issue's own area labels. Always suggesting {majority} is correct for "
+             f"{report['majority_precision']:.0%}.", "",
+             "## Leave-one-out (backfill)", "",
+             "| Evidence | Issues with this evidence | Top suggestion correct |", "| --- | --- | --- |"]
+    for name, v in report["variants"].items():
+        lines.append(f"| {name} | {v['issues_with_evidence']} | {pct(v['precision'])} |")
+    lines += ["", "| Confidence at least | Issues | Top suggestion correct |", "| --- | --- | --- |"]
+    lines += [f"| {b['confidence_at_least']:.1f} | {b['issues']} | {pct(b['precision'])} |" for b in bins]
+    lines += ["", f"Cutoff: confidence {cut}, the lowest level whose suggestions were right at least "
+                  f"{args.target:.0%} of the time here and in the time split below. Below it the issue is marked "
+                  f"\"{NO_FIT}\".", "",
+              f"## Time split (new issues)", "",
+              f"Labels from before {args.split} only, tested on the {len(later)} labeled issues created after it.", "",
+              "| Confidence at least | Issues | Top suggestion correct |", "| --- | --- | --- |"]
+    lines += [f"| {b['confidence_at_least']:.1f} | {b['issues']} | {pct(b['precision'])} |" for b in split_bins]
+    lines += ["", f"At the cutoff: {report['time_split']['at_cutoff']['issues']} issues, "
+                  f"{pct(report['time_split']['at_cutoff']['precision'])} correct.", "",
+              "## By label (leave-one-out, no cutoff)", "",
+              "| Label | Labeled issues | Suggested | Precision | Recall |", "| --- | --- | --- | --- | --- |"]
+    for l, v in report["by_label"].items():
+        lines.append(f"| {l} | {v['true']} | {v['suggested']} | {pct(v['precision'])} | {pct(v['recall'])} |")
+    lines += ["", "## Code areas without a label", "",
+              "Merge requests that changed each top-level directory, and the share carrying any area label.", "",
+              "| Directory | MRs | With an area label |", "| --- | --- | --- |"]
+    lines += [f"| {t} | {n} | {tops_labeled[t] / n:.0%} |" for t, n in tops.most_common(15)]
+    sg = report["suggestions"]
+    lines += ["", "## Suggestions", "",
+              f"{sg['unlabeled']} unlabeled issues: {sg['suggested']} get a suggested label ({sg['open_suggested']} "
+              f"open) and {sg['no_fit']} are marked \"{NO_FIT}\" ({sg['open_no_fit']} open). "
+              f"{report['issues_with_template_fields']} issues have template Configuration lines that name a "
+              "language or graphics backend. Written to area_suggestions.csv.", ""]
     (out / "AREA_LABELS.md").write_text("\n".join(lines))
     print("\n".join(lines))
 
