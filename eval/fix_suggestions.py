@@ -153,6 +153,52 @@ def prompt(p, examples=""):
             f"{numbered(p)}\n\nReviewer comment on line {p['line']}:\n{p['comment']}\n")
 
 
+DEFINITION = re.compile(r"^(?:[A-Za-z_][\w:<>,*&\s]*?\s)?([A-Za-z_][\w]*(?:::[~\w]+)+|[A-Za-z_]\w*)\s*\([^;]*$")
+
+
+def enclosing_function(p):
+    """The C++ function definition the commented line sits in, found by scanning up for a definition at column 0."""
+    text = git("show", f"{p['head']}:{p['path']}") or ""
+    lines = text.split("\n")
+    for i in range(min(p["line"], len(lines)) - 1, -1, -1):
+        line = lines[i]
+        if line[:1].isalpha() and not line.startswith(("return", "if", "for", "while", "else", "#")):
+            m = DEFINITION.match(line)
+            if m:
+                return m.group(1)
+    return None
+
+
+def code_examples(p, _pool=None, k=3):
+    """The latest earlier commits that changed the same function (else the same file), from other MRs, with
+    their message and the part of their diff in that function or file."""
+    import sqlite3
+    con = sqlite3.connect(ROOT / "data/index/commits.sqlite")
+    func = enclosing_function(p)
+    found, why = [], ""
+    if func:
+        found = con.execute("SELECT sha, landed, subject, mr FROM commits WHERE landed < ? AND (mr IS NULL OR mr != ?) "
+                            "AND json_array_length(files) <= 30 AND files LIKE ? AND functions LIKE ? ORDER BY landed DESC LIMIT ?",
+                            [p["date"], p["mr"], f'%"{p["path"]}"%', f'%"{func}"%', k]).fetchall()
+        why = f"function {func}"
+    if not found:
+        found = con.execute("SELECT sha, landed, subject, mr FROM commits WHERE landed < ? AND (mr IS NULL OR mr != ?) "
+                            "AND json_array_length(files) <= 30 AND files LIKE ? ORDER BY landed DESC LIMIT ?",
+                            [p["date"], p["mr"], f'%"{p["path"]}"%', k]).fetchall()
+        why = f"file {p['path']}"
+    if not found:
+        return ""
+    text = f"Earlier commits that changed this code ({why}), most recent first:\n\n"
+    short = func.split("::")[-1] if func else None
+    for sha, date, subject, mr in found:
+        diff = git("show", "--format=", "-U2", "--no-color", sha, "--", p["path"]) or ""
+        hunks = re.split(r"(?m)^(?=@@)", diff)
+        keep = [h for h in hunks[1:] if short and short in h.split("\n", 1)[0] + h] or hunks[1:2]
+        body = "\n".join("\n".join(keep).splitlines()[:40])
+        text += f"{date} {subject}{f' (!{mr})' if mr else ''}\n{body}\n\n"
+    return text
+
+
 def random_examples(p, pool, k=3):
     """Earlier comment-and-fix pairs chosen at random: a control for what similar examples add."""
     rng = random.Random(p["id"])
@@ -207,7 +253,7 @@ def run(args):
     import llm
     pairs = load_pairs()
     history = {}
-    if args.history:
+    if args.history and not args.code_history:
         history = {e["id"]: e for e in (json.loads(l) for l in open(ROOT / "data/eval/fix_history.jsonl"))}
     RUNS.mkdir(parents=True, exist_ok=True)
     out = RUNS / f"{args.label}.jsonl"
@@ -215,8 +261,8 @@ def run(args):
     for n, p in enumerate(pairs, 1):
         if p["id"] in done:
             continue
-        pick = random_examples if args.random_examples else past_examples
-        user = prompt(p, pick(p, history) if args.history else "")
+        pick = code_examples if args.code_history else random_examples if args.random_examples else past_examples
+        user = prompt(p, pick(p, history) if (args.history or args.code_history) else "")
         msgs = [{"role": "system", "content": SYSTEM}, {"role": "user", "content": user}]
         if llm.is_openai(args.model):
             content = llm.chat(args.model, msgs, json_mode=True, label=f"fix-{args.label}")["content"]
@@ -334,12 +380,13 @@ def main():
     r.add_argument("--label")
     r.add_argument("--history", action="store_true")
     r.add_argument("--random-examples", action="store_true", help="with --history: random earlier pairs instead")
+    r.add_argument("--code-history", action="store_true", help="earlier commits to the same function or file")
     s = sub.add_parser("score")
     s.add_argument("labels", nargs="+")
     args = p.parse_args()
     if args.cmd == "run":
-        args.label = args.label or (args.model + ("-random" if args.random_examples else "-history" if args.history
-                                                  else "")).replace(":", "_")
+        args.label = args.label or (args.model + ("-code" if args.code_history else "-random" if args.random_examples
+                                                  else "-history" if args.history else "")).replace(":", "_")
     {"build": build, "pool": pool, "run": run, "score": score}[args.cmd](args)
 
 

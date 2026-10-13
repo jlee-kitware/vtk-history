@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Index of VTK's git history: one entry per non-merge commit on upstream master.
 
-Each entry holds the message, author, date, the files changed, the functions changed (the enclosing function git
+Each entry holds the message, author, date written, date landed on master (its merge's date), the files changed, the functions changed (the enclosing function git
 names in each hunk header), line counts, and the merge request that brought the commit in (from the
 "Merge-request: !N" line of its merge commit). Diffs stay in git and are read with `git show` when needed.
 
@@ -49,25 +49,29 @@ def git(*args):
 
 
 def merge_requests():
-    """commit sha -> MR number, from the merge commits' Merge-request trailers and their commit ranges."""
-    out = {}
-    log = git("log", "--merges", "--first-parent", "--format=%H%x00%P%x00%b%x1e", BRANCH)
+    """(commit sha -> MR number, commit sha -> date it landed on master), from the first-parent history: a merge's
+    commits land on the merge's date and take its Merge-request number; a direct commit lands on its own date."""
+    mrs, landed = {}, {}
+    log = git("log", "--first-parent", "--format=%H%x00%P%x00%cd%x00%b%x1e", "--date=short", BRANCH)
     merges = []
     for rec in log.split("\x1e"):
         parts = rec.strip("\n").split("\x00")
-        if len(parts) < 3:
+        if len(parts) < 4:
             continue
-        sha, parents, body = parts
-        m = re.search(r"^Merge-request: !(\d+)", body, re.M)
+        sha, parents, date, body = parts
         ps = parents.split()
-        if m and len(ps) == 2:
-            merges.append((int(m.group(1)), ps[0], ps[1]))
-    for n, (mr, first, second) in enumerate(merges, 1):
+        landed[sha] = date
+        if len(ps) == 2:
+            m = re.search(r"^Merge-request: !(\d+)", body, re.M)
+            merges.append((int(m.group(1)) if m else None, ps[0], ps[1], date))
+    for n, (mr, first, second, date) in enumerate(merges, 1):
         for sha in git("rev-list", "--no-merges", f"{first}..{second}").split():
-            out.setdefault(sha, mr)
-        if n % 2000 == 0:
+            landed.setdefault(sha, date)
+            if mr:
+                mrs.setdefault(sha, mr)
+        if n % 4000 == 0:
             print(f"  {n}/{len(merges)} merges mapped", flush=True)
-    return out
+    return mrs, landed
 
 
 def function_name(context):
@@ -133,33 +137,34 @@ def start(header):
 def build(args):
     t0 = time.time()
     print("mapping commits to merge requests", flush=True)
-    mrs = merge_requests()
+    mrs, landed = merge_requests()
     print(f"  {len(mrs)} commits linked to MRs ({time.time() - t0:.0f}s)", flush=True)
     DB.parent.mkdir(parents=True, exist_ok=True)
     if DB.exists():
         DB.unlink()
     con = sqlite3.connect(DB)
     con.executescript("""
-        CREATE TABLE commits (rowid INTEGER PRIMARY KEY, sha TEXT UNIQUE, date TEXT, author TEXT, subject TEXT,
+        CREATE TABLE commits (rowid INTEGER PRIMARY KEY, sha TEXT UNIQUE, date TEXT, landed TEXT, author TEXT, subject TEXT,
             body TEXT, files TEXT, functions TEXT, added INTEGER, removed INTEGER, mr INTEGER);
         CREATE VIRTUAL TABLE commits_fts USING fts5(subject, body, files, functions, content='commits',
             content_rowid='rowid', tokenize="unicode61 tokenchars '_:'");
         CREATE INDEX commits_date ON commits(date);
+        CREATE INDEX commits_landed ON commits(landed);
         CREATE INDEX commits_mr ON commits(mr);
     """)
     rows = []
     for n, c in enumerate(parse_log(), 1):
         files = [p for p, _ in c["files"].most_common()]
         funcs = [f for f, _ in c["functions"].most_common(60)]
-        rows.append((c["sha"], c["date"], c["author"], c["subject"], c["body"], json.dumps(files),
+        rows.append((c["sha"], c["date"], landed.get(c["sha"], c["date"]), c["author"], c["subject"], c["body"], json.dumps(files),
                      json.dumps(funcs), c["added"], c["removed"], mrs.get(c["sha"])))
         if len(rows) >= 2000:
-            con.executemany("INSERT OR IGNORE INTO commits (sha, date, author, subject, body, files, functions, "
-                            "added, removed, mr) VALUES (?,?,?,?,?,?,?,?,?,?)", rows)
+            con.executemany("INSERT OR IGNORE INTO commits (sha, date, landed, author, subject, body, files, "
+                            "functions, added, removed, mr) VALUES (?,?,?,?,?,?,?,?,?,?,?)", rows)
             rows = []
             print(f"  {n} commits ({time.time() - t0:.0f}s)", flush=True)
-    con.executemany("INSERT OR IGNORE INTO commits (sha, date, author, subject, body, files, functions, added, "
-                    "removed, mr) VALUES (?,?,?,?,?,?,?,?,?,?)", rows)
+    con.executemany("INSERT OR IGNORE INTO commits (sha, date, landed, author, subject, body, files, functions, "
+                    "added, removed, mr) VALUES (?,?,?,?,?,?,?,?,?,?,?)", rows)
     con.execute("INSERT INTO commits_fts (rowid, subject, body, files, functions) "
                 "SELECT rowid, subject, body, replace(files, '/', ' '), functions FROM commits")
     con.commit()
@@ -220,10 +225,10 @@ class Commits:
     def where(self, until=None, since=None, path=None, function=None):
         clauses, params = [], []
         if until:
-            clauses.append("c.date < ?")
+            clauses.append("c.landed < ?")
             params.append(until)
         if since:
-            clauses.append("c.date >= ?")
+            clauses.append("c.landed >= ?")
             params.append(since)
         if path:
             clauses.append("c.files LIKE ?")
