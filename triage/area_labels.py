@@ -320,6 +320,18 @@ def main():
     report["suggestions"] = {"unlabeled": len(rows), "suggested": len(fit), "no_fit": len(rows) - len(fit),
                              "open_suggested": sum(r["state"] == "opened" for r in fit),
                              "open_no_fit": sum(r["state"] == "opened" and r["suggested"] == NO_FIT for r in rows)}
+    now = Counter(l for v in issues.values() for l in v["areas"])
+    added = Counter(r["suggested"] for r in fit)
+    is_open = {i for i, v in issues.items() if v["state"] == "opened"}
+    report["backfill"] = {
+        "issues": len(issues), "open": len(is_open),
+        "labeled_now": sum(bool(v["areas"]) for v in issues.values()),
+        "open_labeled_now": sum(bool(issues[i]["areas"]) for i in is_open),
+        "added": len(fit), "open_added": sum(r["issue"] in is_open for r in fit),
+        "expected_wrong": round(sum(1 - r["expected_precision"] for r in fit)),
+        "by_label": [{"label": l, "now": now[l], "added": added[l], "after": now[l] + added[l]}
+                     for l in sorted(set(now) | set(added), key=lambda l: -(now[l] + added[l]))],
+    }
     json.dump(report, open(out / "area_eval.json", "w"), indent=1)
 
     pct = lambda x: f"{x:.0%}" if x is not None else ""

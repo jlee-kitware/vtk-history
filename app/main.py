@@ -10,6 +10,8 @@ Views:
                 accept, edit, or reject each (saved to rules/curated.json)
   Deprecations  every API VTK has deprecated, with reason and the MRs that deprecated and removed it
   Trends        emerging, past, and fading terms, code areas, themes, and GitLab labels, with per-quarter charts
+  Labels        area label suggestions for unlabeled issues: what a backfill would add, how accurate the
+                suggestions were on issues maintainers already labeled, and a lookup for one issue
   Search        review threads, MRs, issues, forum posts, docs, release notes, and class docs, filterable by
                 GitLab label
 
@@ -19,11 +21,12 @@ Usage:
 
 import asyncio
 import sys
+import time
 from datetime import datetime
 from pathlib import Path
 from urllib.parse import quote
 
-from trame.app import get_server
+from trame.app import asynchronous, get_server
 from trame.ui.mui import MuiLayout
 from trame.widgets import html, mui, react
 
@@ -91,6 +94,8 @@ TABS = [
     ("deprecations", "Deprecations", "VTK APIs that were deprecated, in which version, and whether they were removed"),
     ("trends", "Trends", "Terms, code areas, themes and GitLab labels whose share of merge requests, issues or "
                          "forum topics rose or fell"),
+    ("labels", "Labels", "Suggested area labels for issues that have none, and how accurate the suggestions were on "
+                         "issues maintainers already labeled"),
     ("search", "Search", "Search merge requests, issues, review threads, forum topics, blog posts and docs"),
 ]
 MAX_ROWS = 400
@@ -854,15 +859,28 @@ def rate(key, verdict):
         render_file(state.rv_file)
 
 
-async def run_agent():
+def run_agent():
+    """Start the review as a background task. wslink awaits a callback before it reads the next websocket
+    message, so awaiting a minute-long review here would stop pong replies and the browser would disconnect."""
     if not state.rv_mr or state.rv_rev is None or state.rv_running:
         return
-    rev, mr = REV["revs"][state.rv_rev], state.rv_mr
-    state.rv_running, state.rv_status = True, f"Reviewing with {state.rv_model}; this takes one to five minutes..."
-    state.flush()
+    asynchronous.create_task(agent_task(REV["revs"][state.rv_rev], state.rv_mr, state.rv_model))
+
+
+async def agent_task(rev, mr, model):
+    with state:
+        state.rv_running, state.rv_status = True, f"Reviewing with {model}; this takes one to five minutes..."
+    start = time.monotonic()
     try:
-        await asyncio.get_running_loop().run_in_executor(
-            None, reviews.run_agent, mr["iid"], rev["base"], rev["head"], mr["title"], mr["created"], state.rv_model)
+        job = asyncio.get_running_loop().run_in_executor(
+            None, reviews.run_agent, mr["iid"], rev["base"], rev["head"], mr["title"], mr["created"], model)
+        while not job.done():
+            await asyncio.wait({job}, timeout=5)
+            if not job.done():
+                with state:
+                    state.rv_status = (f"Reviewing with {model}: {time.monotonic() - start:.0f} s so far; "
+                                       "usually one to five minutes")
+        job.result()
         with state:
             state.rv_status = ""
             state.rv_queue = reviews.reviewed_mrs()
@@ -1187,6 +1205,199 @@ def briefing_view():
                                     html.Span([" ", B("c.date"), " ", B("c.who"), ": ", B("c.subject")])
 
 
+# ----------------------------------------------------------------------------- Labels
+
+NO_FIT = "no label fits"
+
+
+def label_summary():
+    ev = store.area_eval or {}
+    b = ev.get("backfill")
+    if not b:
+        return {}
+    split = {x["confidence_at_least"]: x for x in ev["time_split"]["by_confidence"]}
+    pct = lambda x: f"{x:.0%}" if x is not None else ""
+    accuracy = [{"conf": f"{x['confidence_at_least']:.1f}", "cutoff": x["confidence_at_least"] == ev["cutoff"],
+                 "backfill": f"{pct(x['precision'])} of {x['issues']}",
+                 "new": f"{pct(split[x['confidence_at_least']]['precision'])} of "
+                        f"{split[x['confidence_at_least']]['issues']}"} for x in ev["by_confidence"]]
+    dirs = [{"dir": d, "mrs": v["mrs"], "share": f"{v['with_area_label'] / v['mrs']:.0%}"}
+            for d, v in ev["directories"].items()]
+    after, open_after = b["labeled_now"] + b["added"], b["open_labeled_now"] + b["open_added"]
+    return {
+        "now": f"{b['labeled_now']:,} of {b['issues']:,} issues ({b['labeled_now'] / b['issues']:.0%}) carry an area "
+               f"label; {b['open_labeled_now']} of {b['open']:,} open issues ({b['open_labeled_now'] / b['open']:.0%}).",
+        "after": f"Applying every suggestion at or above the cutoff ({ev['cutoff']}) adds {b['added']:,} labels: "
+                 f"{after:,} issues ({after / b['issues']:.0%}) and {open_after} open issues "
+                 f"({open_after / b['open']:.0%}) would carry one.",
+        "wrong": f"From the accuracy measured at each confidence level, about {b['expected_wrong']} of the added labels "
+                 f"would be wrong. {ev['suggestions']['no_fit']:,} issues ({ev['suggestions']['open_no_fit']} open) "
+                 f"stay unlabeled as “{NO_FIT}”.",
+        "by_label": b["by_label"], "accuracy": accuracy, "dirs": dirs,
+        "cutoff": ev["cutoff"], "target": f"{ev['target']:.0%}", "split": ev["time_split"]["split"][:4],
+    }
+
+
+state.update({"lb_state": "opened", "lb_label": "", "lb_min": "", "lb_search": "", "lb_rows": [], "lb_shown": "",
+              "lb_summary": label_summary(), "lb_states": [{"title": "Open", "value": "opened"},
+                                                          {"title": "Closed", "value": "closed"}],
+              "lb_labels": options([NO_FIT] + sorted({r["suggested"] for r in store.area_rows} - {NO_FIT})),
+              "lb_iid": "", "lb_lookup": None, "lb_busy": False, "lb_error": ""})
+
+
+@state.change("lb_state", "lb_label", "lb_min", "lb_search")
+def refresh_labels(**_):
+    try:
+        low = float(state.lb_min) if (state.lb_min or "").strip() else 0.0
+    except ValueError:
+        low = 0.0
+    needle = (state.lb_search or "").lower().strip()
+    rows = [r for r in store.area_rows
+            if (not state.lb_state or r["state"] == state.lb_state)
+            and (not state.lb_label or r["suggested"] == state.lb_label)
+            and r["confidence"] >= low and (not needle or needle in r["title"].lower())]
+    state.lb_rows = [dict(r, key=r["issue"], fits=r["suggested"] != NO_FIT,
+                          expected=f"{r['expected_precision']:.0%}") for r in rows[:MAX_ROWS]]
+    state.lb_shown = f"{len(rows):,} issues" + (f", the first {MAX_ROWS} shown" if len(rows) > MAX_ROWS else "")
+
+
+def lookup_label(iid=None):
+    iid = str(iid if iid is not None else state.lb_iid).strip().lstrip("#")
+    if not iid.isdigit() or state.lb_busy:
+        return
+    asynchronous.create_task(lookup_task(int(iid)))
+
+
+async def lookup_task(iid):
+    with state:
+        state.lb_busy, state.lb_error = True, ""
+    try:
+        found = await asyncio.get_running_loop().run_in_executor(None, store.suggest_labels, iid)
+        with state:
+            state.lb_lookup, state.lb_error = (None, found["error"]) if "error" in found else (found, "")
+    except OSError as e:
+        with state:
+            state.lb_error = f"The suggestion needs the DGX Spark for issues outside the index and could not reach it: {e}"
+    finally:
+        with state:
+            state.lb_busy = False
+
+
+def lookup_key(key, value):
+    if key == "Enter":
+        lookup_label(value)
+
+
+def small_table(columns, items, name, cells):
+    with mui.Table(size="small"):
+        head(*columns)
+        with mui.TableBody():
+            with react.For(items=items, name=name):
+                with mui.TableRow(key=B(cells[0][0])):
+                    for expr, style in cells:
+                        mui.TableCell([B(expr)], style=style)
+
+
+def labels_view():
+    caption("Suggested area labels for VTK issues that have none, from the most similar labeled issues and "
+            "merge requests, the files changed by merge requests that link the issue, and the issue template's "
+            "Language and Graphics backend lines. Nothing is applied on GitLab from here.", marginBottom="10px")
+    with react.If(value="!lb_summary.now"):
+        mui.Alert("Run python triage/area_labels.py to create the suggestions.", severity="info")
+    with react.If(value="lb_summary.now"):
+        with html.Div(style={"display": "grid", "gridTemplateColumns": "repeat(auto-fit, minmax(420px, 1fr))",
+                             "gap": "12px", "alignItems": "start", "marginBottom": "12px"}):
+            for _ in section("Backfill simulation", "lb_summary.by_label",
+                             "'What the issue tracker would look like with the suggestions applied'"):
+                for key in ("now", "after", "wrong"):
+                    html.Div([B(f"lb_summary.{key}")], style={"margin": "4px 0", "fontSize": "0.88rem"})
+                with html.Div(style={"maxHeight": "260px", "overflowY": "auto", "marginTop": "6px"}):
+                    small_table([("Label", None), ("Now", 60, "Issues carrying it today"),
+                                 ("Added", 70, "Issues the backfill would label with it"),
+                                 ("After", 60)], "lb_summary.by_label", "b",
+                                [("b.label", {"fontFamily": MONO}), ("b.now", {}),
+                                 ("b.added", {"color": ACCENT, "fontWeight": 500}), ("b.after", {})])
+            with html.Div(style={"display": "flex", "flexDirection": "column", "gap": "12px"}):
+                for _ in section("How accurate the suggestions were", "lb_summary.accuracy",
+                                 "'Tested on issues maintainers already labeled. Backfill: each labeled issue treated "
+                                 "as unlabeled. New issues: only labels from before ' + lb_summary.split + ', tested on "
+                                 "issues filed since. The cutoff is the lowest confidence where both reach ' + "
+                                 "lb_summary.target + '.'"):
+                    with mui.Table(size="small"):
+                        head(("Confidence at least", None), ("Backfill test: right", None),
+                             ("New-issue test: right", None))
+                        with mui.TableBody():
+                            with react.For(items="lb_summary.accuracy", name="a"):
+                                with mui.TableRow(key=B("a.conf"), selected=B("a.cutoff")):
+                                    mui.TableCell([B("a.conf"), B("a.cutoff ? ' (cutoff)' : ''")])
+                                    mui.TableCell([B("a.backfill")])
+                                    mui.TableCell([B("a.new")])
+                for _ in section("Code areas without a label", "lb_summary.dirs",
+                                 "'Merge requests that changed each top-level directory, and the share carrying any "
+                                 "area label. Issues in the low-share areas often end up as “no label fits”.'"):
+                    with html.Div(style={"maxHeight": "200px", "overflowY": "auto"}):
+                        small_table([("Directory", None), ("MRs", 70), ("With an area label", 130)],
+                                    "lb_summary.dirs", "d", [("d.dir", {"fontFamily": MONO}), ("d.mrs", {}),
+                                                             ("d.share", {})])
+    with bar():
+        field("Issue number", "lb_iid", 130, on_enter=lookup_key,
+              tip="Type an issue number and press Enter to see its suggested labels")
+        with tipped("Suggest labels for this issue; the first lookup takes a few seconds to load the history"):
+            mui.Button("Suggest", size="small", variant="contained", loading=B("lb_busy"),
+                       on_click=C(lookup_label, "[lb_iid]"))
+        with react.If(value="lb_error"):
+            html.Span([B("lb_error")], style={"color": "#bc4c00", "fontSize": "0.85rem"})
+    with react.If(value="lb_lookup"):
+        with html.Div(style={**CARD, "margin": "0 0 12px"}):
+            with html.Div(style={"display": "flex", "gap": "8px", "alignItems": "baseline", "flexWrap": "wrap"}):
+                link("'#' + lb_lookup.issue", "lb_lookup.url")
+                html.Span([B("lb_lookup.title")], style={"fontWeight": 500})
+                html.Span([B("lb_lookup.state")], style=SMALL)
+            html.Div([B("'Suggested: ' + lb_lookup.suggested + ' (confidence ' + lb_lookup.confidence + ', cutoff ' "
+                        "+ lb_lookup.cutoff + ')'")], style={"marginTop": "6px", "fontWeight": 600})
+            html.Div([B("'Ranked: ' + lb_lookup.ranked.map(r => r.label + ' ' + r.share).join(', ')")], style=SMALL)
+            with react.If(value="lb_lookup.lang.length"):
+                html.Div([B("'From the template: ' + lb_lookup.lang.join(', ')")], style=SMALL)
+            with react.If(value="lb_lookup.linked.length"):
+                html.Div([B("'Linked MRs: ' + lb_lookup.linked.join(' ')")], style=SMALL)
+            html.Div([B("'Labels on GitLab now: ' + (lb_lookup.labels.join(', ') || 'none')")], style=SMALL)
+    with bar():
+        select("State", "lb_state", "lb_states", 110, tip="Open or closed issues; empty shows both")
+        select("Suggested label", "lb_label", "lb_labels", 200,
+               tip="Only issues with this suggestion, or the ones marked “no label fits”")
+        field("Min confidence", "lb_min", 130, tip="Only suggestions at or above this confidence, from 0 to 1")
+        field("Filter titles", "lb_search", tip="Show issues whose title contains these words")
+        html.Span([B("lb_shown")], style={"color": MUTED, "fontSize": "0.85rem"})
+    cell = {"verticalAlign": "top"}
+    with table(330), mui.Table(size="small", sticky_header=True):
+        head(("Issue", 70), ("Title", None), ("State", 70), ("Created", 95),
+             ("Suggested", 170, "The closest label when its confidence reaches the cutoff; otherwise "
+                                "“no label fits” with the best guess below it"),
+             ("Confidence", 90, "Share of the evidence's votes that went to the top label"),
+             ("Measured", 85, "How often suggestions at this confidence were right on labeled issues"),
+             ("Evidence", 110, "text: similar labeled issues and MRs; files: files changed by linked MRs; "
+                              "mr: labels on linked MRs; field: the issue template"),
+             ("Linked MRs", 110))
+        with mui.TableBody():
+            with react.For(items="lb_rows", name="r"):
+                with mui.TableRow(key=B("r.key"), hover=True):
+                    with mui.TableCell(style=cell):
+                        link("'#' + r.issue", "r.url")
+                    mui.TableCell([B("r.title")], style=cell)
+                    mui.TableCell([B("r.state")], style=cell)
+                    mui.TableCell([B("r.created")], style={**cell, "whiteSpace": "nowrap"})
+                    with mui.TableCell(style=cell):
+                        with react.If(value="r.fits"):
+                            pill("r.suggested", ACCENT, ACCENT_TINT)
+                        with react.If(value="!r.fits"):
+                            pill("r.suggested", MUTED, "#EEF1F5")
+                            html.Div([B("'best guess ' + r.best_guess")], style=SMALL)
+                    mui.TableCell([B("r.confidence")], style=cell)
+                    mui.TableCell([B("r.expected")], style=cell)
+                    mui.TableCell([B("r.evidence")], style={**cell, **SMALL})
+                    mui.TableCell([B("r.linked_mrs")], style={**cell, **SMALL})
+
+
 # ----------------------------------------------------------------------------- Layout
 
 with MuiLayout(server, theme=THEME) as layout:
@@ -1212,12 +1423,14 @@ with MuiLayout(server, theme=THEME) as layout:
             mui.LinearProgress(style={"position": "absolute", "left": 0, "right": 0, "bottom": "-1px", "height": "2px",
                                       "visibility": B("trame__busy ? 'visible' : 'hidden'")})
         with html.Main(style={"flex": "1", "overflow": "auto", "padding": "16px 20px"}):
-            for value, view in (("briefing", briefing_view), ("review", review_view), ("rules", rules_view), ("deprecations", deprecations_view),
-                                ("trends", trends_view), ("search", search_view)):
+            for value, view in (("briefing", briefing_view), ("review", review_view), ("rules", rules_view),
+                                ("deprecations", deprecations_view), ("trends", trends_view),
+                                ("labels", labels_view), ("search", search_view)):
                 with react.If(value=f"tab === '{value}'"):
                     view()
 
 refresh_rules()
+refresh_labels()
 on_dep_filters(state.dep_outcome, state.dep_search)
 on_trend_filters(state.trend_what, state.trend_source, state.trend_kind, state.trend_common)
 

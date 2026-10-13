@@ -1,4 +1,4 @@
-"""Data the app shows: review rules with curation, deprecations, trends, and search.
+"""Data the app shows: review rules with curation, deprecations, trends, search, and area label suggestions.
 
 Curation decisions live in rules/curated.json, which is tracked in git so every accept,
 edit, or reject is reviewable. A rule is keyed by a hash of its supporting threads, so a
@@ -10,10 +10,12 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import config  # noqa: E402
+import csv
 import getpass
 import hashlib
 import json
 import sys
+from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -56,6 +58,14 @@ class Store:
         self.terms = self._json("data/trends/terms-v2/terms.json")
         self.themes = self._json("data/trends/k250/themes.json")
         self.label_trends = self._json("data/trends/labels.json")
+        self.area_eval = self._json("data/labels/area_eval.json")
+        self.area_rows = []
+        path = ROOT / "data/labels/area_suggestions.csv"
+        if path.exists():
+            for r in csv.DictReader(open(path)):
+                self.area_rows.append(dict(r, issue=int(r["issue"]), confidence=float(r["confidence"]),
+                                           expected_precision=float(r["expected_precision"])))
+        self._suggester = None
         self._index = None
 
     def _json(self, rel):
@@ -252,6 +262,36 @@ class Store:
                          "description": theme.get("description") or "",
                          "examples": [dict(e, source=source) for e in theme["examples"][source]]})
         return rows, data["quarters"], data["documents_per_quarter"]
+
+    def suggester(self):
+        """The area label suggester over the app's index; built on first use (a few seconds)."""
+        if self._suggester is None:
+            sys.path.insert(0, str(ROOT / "triage"))
+            import area_labels as A
+            issues, mrs, links = A.load_items(ROOT / "data/vtk-history")
+            counts = Counter(l for v in list(issues.values()) + list(mrs.values()) for l in v["areas"])
+            labels = {l for l, n in counts.items() if n >= A.MIN_ITEMS}
+            self._suggester = (A, A.Suggester(self.index, issues, mrs, links,
+                                              A.mr_dirs(ROOT / "data/index/commits.sqlite"), labels))
+        return self._suggester
+
+    def suggest_labels(self, iid):
+        A, s = self.suggester()
+        path = ROOT / "data/vtk-history/issues" / f"{iid}.json"
+        if not path.exists():
+            return {"error": f"Issue #{iid} is not in the mirror."}
+        issue = json.loads(path.read_text())["issue"]
+        text = f"Issue #{issue['iid']}: {issue['title']}\n\n{issue.get('description') or ''}"
+        fields = A.field_labels(issue.get("description"))
+        top, conf, ranked = A.Suggester.combine(s.evidence(iid, text, fields), ("text", "files", "mr", "field"))
+        cut = (self.area_eval or {}).get("cutoff", 0.6)
+        total = sum(v for _, v in ranked) or 1
+        return {"issue": iid, "title": issue["title"], "url": issue["web_url"], "state": issue["state"],
+                "labels": issue.get("labels") or [], "cutoff": cut, "confidence": round(conf, 2),
+                "suggested": (top if conf >= cut else A.NO_FIT) if top else "no evidence",
+                "ranked": [{"label": l, "share": f"{v / total:.0%}"} for l, v in ranked[:5]],
+                "lang": sorted(l for l in fields if l.startswith("lang:")),
+                "linked": [f"!{m}" for m in sorted(s.links.get(iid, ()))]}
 
     def label_options(self):
         return [{"title": f"{label} ({n})", "value": label} for label, n in self.index.labels()]

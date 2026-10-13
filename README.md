@@ -85,7 +85,7 @@ python3 -m venv --system-site-packages ~/venvs/trame4 && ~/venvs/trame4/bin/pip 
 bash app/run.sh        # serves http://localhost:8080
 ```
 
-Tabs: Briefing, Review, Rules, Deprecations, Trends, Search. Every control has a tooltip that says what it does.
+Tabs: Briefing, Review, Rules, Deprecations, Trends, Labels, Search. Labels shows what applying the area label suggestions would add, how accurate they were on issues maintainers already labeled, and a lookup for one issue. Every control has a tooltip that says what it does.
 
 ## Reproducing the measurements
 
