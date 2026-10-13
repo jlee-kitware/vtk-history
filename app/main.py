@@ -9,8 +9,9 @@ Views:
                 deprecated APIs), with the comments behind each;
                 accept, edit, or reject each (saved to rules/curated.json)
   Deprecations  every API VTK has deprecated, with reason and the MRs that deprecated and removed it
-  Trends        emerging, past, and fading terms, code areas, and themes, with per-quarter charts
-  Search        review threads, MRs, issues, forum posts, docs, release notes, and class docs
+  Trends        emerging, past, and fading terms, code areas, themes, and GitLab labels, with per-quarter charts
+  Search        review threads, MRs, issues, forum posts, docs, release notes, and class docs, filterable by
+                GitLab label
 
 Usage:
   python app/main.py --server --port 8080
@@ -88,7 +89,8 @@ TABS = [
     ("rules", "Rules", "Review conventions distilled from past reviewer comments, with how often authors act on "
                        "them; accept, edit or reject each"),
     ("deprecations", "Deprecations", "VTK APIs that were deprecated, in which version, and whether they were removed"),
-    ("trends", "Trends", "Terms, code areas and themes whose share of merge requests or forum topics rose or fell"),
+    ("trends", "Trends", "Terms, code areas, themes and GitLab labels whose share of merge requests, issues or "
+                         "forum topics rose or fell"),
     ("search", "Search", "Search merge requests, issues, review threads, forum topics, blog posts and docs"),
 ]
 MAX_ROWS = 400
@@ -113,7 +115,8 @@ state.update({
     "outcomes": options(["present", "removed", "undeprecated"]),
     "trend_what": "terms", "trend_source": "mr", "trend_kind": "emerging", "trend_common": False,
     "trend_rows": [], "trend_name": None, "trend_row": None, "trend_chart": "", "trend_title": "",
-    "q": "", "q_kind": "", "q_since": "", "q_until": "", "search_rows": [], "searching": False, "search_error": "",
+    "q": "", "q_kind": "", "q_since": "", "q_until": "", "q_label": "", "search_rows": [], "searching": False,
+    "search_error": "", "label_options": store.label_options(),
     "kinds": options(["thread", "mr", "issue", "post", "blog", "doc", "note", "class"]),
     "topic": None, "topic_error": "", "search_more": [],
 })
@@ -433,6 +436,12 @@ TREND = {"quarters": [], "docs": [], "rows": {}}
 
 @state.change("trend_what", "trend_source", "trend_kind", "trend_common")
 def on_trend_filters(trend_what, trend_source, trend_kind, trend_common, **_):
+    if trend_what == "labels" and trend_source == "discourse":
+        state.trend_source = trend_source = "issue"
+    if trend_what != "labels" and trend_source == "issue":
+        state.trend_source = trend_source = "mr"
+    if trend_what != "labels" and trend_kind == "all":
+        state.trend_kind = trend_kind = "emerging"
     rows, quarters, docs = store.trend_rows(trend_what, trend_source, trend_kind, trend_common and trend_what == "terms")
     TREND.update(quarters=quarters, docs=docs, rows={r["name"]: r for r in rows})
     state.trend_rows = [{k: r[k] for k in ("name", "ratio", "docs", "first_seen", "peak")} for r in rows]
@@ -449,8 +458,11 @@ def on_trend_name(trend_name, **_):
     state.trend_row = {"name": row["name"], "description": row.get("description", ""), "examples": [
         dict(e, url=store.example_url(e["source"], e["id"])) for e in row["examples"]]}
     share = [100 * c / n if n else 0 for c, n in zip(row["series"], TREND["docs"])]
-    label = "merge requests" if state.trend_source == "mr" else "forum topics"
-    state.trend_title = f"Share of {label} mentioning {row['name']}, by quarter"
+    label = {"mr": "merge requests", "issue": "issues"}.get(state.trend_source, "forum topics")
+    if state.trend_what == "labels":
+        state.trend_title = f"Share of labeled {label} carrying {row['name']}, by quarter"
+    else:
+        state.trend_title = f"Share of {label} mentioning {row['name']}, by quarter"
     state.trend_chart = "data:image/svg+xml;utf8," + quote(line_svg(TREND["quarters"][:len(share)], share, "%"))
 
 
@@ -458,10 +470,18 @@ def trends_view():
     with bar():
         toggle("trend_what", [
             ("Terms and code areas", "terms", "Single words, identifiers, and code directories (shown as dir:...)"),
-            ("Themes", "themes", "Groups of related merge requests or topics, found by clustering their text")])
-        toggle("trend_source", [
-            ("Merge requests", "mr", "Count merge requests: title, description, and the directories they changed"),
-            ("Forum", "discourse", "Count Discourse forum topics: title and first post")])
+            ("Themes", "themes", "Groups of related merge requests or topics, found by clustering their text"),
+            ("GitLab labels", "labels", "The area: and lang: labels maintainers put on issues and merge requests. "
+                                        "Shares are of the items that carry at least one such label, since 2015")])
+        with react.If(value="trend_what !== 'labels'"):
+            toggle("trend_source", [
+                ("Merge requests", "mr", "Count merge requests: title, description, and the directories they changed"),
+                ("Forum", "discourse", "Count Discourse forum topics: title and first post")])
+        with react.If(value="trend_what === 'labels'"):
+            toggle("trend_source", [
+                ("Merge requests", "mr", "Count labeled merge requests"),
+                ("Issues", "issue", "Count labeled issues")])
+            toggle("trend_kind", [("All labels", "all", "Every label used at least 8 times, most used first")])
         toggle("trend_kind", [
             ("Emerging", "emerging", "Ratio = share in the last 2 years / share in the 4 years before"),
             ("Past bursts", "past", "Ratio = share at its peak (4-quarter average) / share in the years around "
@@ -506,7 +526,8 @@ def trends_view():
                     with react.For(items="trend_row.examples", name="e"):
                         with html.Div(key=B("e.source + e.id"), style={"margin": "4px 0"}):
                             html.Span([B("e.q"), " "], style={"color": MUTED})
-                            link("e.source === 'mr' ? '!' + e.id : 'topic ' + e.id", "e.url")
+                            link("e.source === 'mr' ? '!' + e.id : e.source === 'issue' ? '#' + e.id : 'topic ' + e.id",
+                                 "e.url")
                             html.Span([" ", B("e.title")])
 
 
@@ -520,7 +541,7 @@ def run_search(q=None):
     state.searching, state.search_error = True, ""
     state.flush()
     try:
-        found = store.search(state.q, state.q_kind or None, state.q_since, state.q_until)
+        found = store.search(state.q, state.q_kind or None, state.q_since, state.q_until, state.q_label or None)
         state.search_rows = [r for r in found if not r["other_kind"]]
         state.search_more = [r for r in found if r["other_kind"]]
     except OSError as e:
@@ -610,6 +631,9 @@ def search_results():
               tip="Matches by keyword and by meaning; press Enter to search")
         select("Kind", "q_kind", "kinds", 120,
                tip="Limit to one kind: review thread, merge request, issue, forum post, blog, doc, note or class")
+        select("GitLab label", "q_label", "label_options", 220,
+               tip="Only issues and merge requests carrying this label, and review threads and release notes of "
+                   "such merge requests. The number is how many issues and MRs carry it")
         field("Since (YYYY-MM-DD)", "q_since", 170, tip="Only items on or after this date")
         field("Before (YYYY-MM-DD)", "q_until", 170, tip="Only items before this date")
         with tipped("Run the search"):
@@ -627,6 +651,16 @@ def search_results():
             caption("The best matches of each kind that did not make the list above. Choose a Kind to see more.",
                     marginBottom="6px")
             result_table("search_more")
+
+
+def label_pills(expr):
+    with react.If(value=f"{expr} && {expr}.length"):
+        with html.Div(style={"display": "flex", "flexWrap": "wrap", "gap": "4px", "margin": "2px 0"}):
+            with react.For(items=expr, name="lb"):
+                html.Span([B("lb")], key=B("lb"), style={
+                    "fontSize": "0.7rem", "borderRadius": "8px", "padding": "0 6px", "whiteSpace": "nowrap",
+                    "color": B(f"lb.startsWith('area:') ? '{ACCENT}' : '{MUTED}'"),
+                    "background": B(f"lb.startsWith('area:') ? '{ACCENT_TINT}' : '#EEF1F5'")})
 
 
 def result_table(items):
@@ -649,6 +683,7 @@ def result_table(items):
                             html.Div([B("s.title")], style={"fontWeight": 500})
                             with react.If(value="s.path"):
                                 caption([B("s.path")])
+                            label_pills("s.labels")
                             caption([B("s.snippet")])
                             with react.If(value="s.topic"):
                                 with tipped("Read the whole forum topic, with the MRs, issues and topics it "
@@ -1110,6 +1145,7 @@ def briefing_view():
                                     pill("'linked in the description'", "#1A7F37", "#E6F4EA")
                             html.Div([B("h.date"), B("h.topic ? ' \u00b7 ' + h.topic : ''")],
                                      style={**SMALL, "paddingLeft": "4px"})
+                            label_pills("h.labels")
                 for _ in section("Deprecated APIs in the added code", "br.deprecated", "br.measured.deprecated"):
                     with react.If(value="!br.deprecated.length"):
                         html.Div("None found.", style=SMALL)

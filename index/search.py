@@ -5,7 +5,8 @@ Combines two rankings by reciprocal rank fusion:
   keyword    SQLite FTS5 BM25 over title, text, file path, and class (exact identifiers)
   meaning    cosine similarity of qwen3-embedding vectors (paraphrases)
 
-Filters: kind (thread, mr, issue, post, blog, doc, note, class), date range, module, class, path prefix, author.
+Filters: kind (thread, mr, issue, post, blog, doc, note, class), date range, module, class, path prefix, author,
+and GitLab label (index/labels.py; threads and notes carry their MR's labels).
 With no kind given, search_mixed adds the best few of each kind missing from the overall top results, so a
 small source (blog posts, docs) is not crowded out by a large one (review threads).
 The --until filter lets an evaluation see only history from before a given date.
@@ -52,9 +53,22 @@ class Index:
         self.vectors = None
         if self.meta and (self.path / "vectors.npy").exists():
             self.vectors = np.load(self.path / "vectors.npy").astype(np.float32)
-            cols = self.con.execute("SELECT kind, date, module, class, path, author FROM docs ORDER BY rowid").fetchall()
-            self.cols = {name: np.array([c[i] or "" for c in cols]) for i, name in
-                         enumerate(("kind", "date", "module", "class", "path", "author"))}
+            names = ("kind", "date", "module", "class", "path", "author") + (("labels",) if self.has_labels else ())
+            cols = self.con.execute(f"SELECT {', '.join(names)} FROM docs ORDER BY rowid").fetchall()
+            self.cols = {name: np.array([c[i] or "" for c in cols]) for i, name in enumerate(names)}
+
+    @property
+    def has_labels(self):
+        return any(r[1] == "labels" for r in self.con.execute("PRAGMA table_info(docs)"))
+
+    def labels(self):
+        """[(label, items)] over issues and MRs, most used first."""
+        if not self.has_labels:
+            return []
+        from collections import Counter
+        c = Counter(l for (s,) in self.con.execute("SELECT labels FROM docs WHERE kind IN ('issue', 'mr') AND labels != ''")
+                    for l in s.strip(",").split(","))
+        return c.most_common()
 
     @property
     def con(self):
@@ -85,6 +99,9 @@ class Index:
         if f.get("path"):
             clauses.append("d.path LIKE ?")
             params.append(f["path"] + "%")
+        if f.get("label"):
+            clauses.append("d.labels LIKE ?")
+            params.append(f"%,{f['label']},%")
         return (" AND " + " AND ".join(clauses)) if clauses else "", params
 
     def keyword(self, query, n, max_terms=40, **f):
@@ -115,6 +132,8 @@ class Index:
             mask &= self.cols["date"] < f["until"]
         if f.get("path"):
             mask &= np.char.startswith(self.cols["path"], f["path"])
+        if f.get("label"):
+            mask &= np.char.find(self.cols.get("labels", np.array([""] * len(scores))), f",{f['label']},") >= 0
         scores[~mask] = -np.inf
         top = np.argpartition(-scores, min(n, len(scores) - 1))[:n]
         return [int(i) + 1 for i in top[np.argsort(-scores[top])] if np.isfinite(scores[i])]
@@ -167,6 +186,7 @@ def main():
     p.add_argument("--class", dest="class_")
     p.add_argument("--path")
     p.add_argument("--author")
+    p.add_argument("--label", help="a GitLab label, such as area:rendering")
     p.add_argument("--index", default="data/index")
     args = p.parse_args()
 
@@ -174,10 +194,11 @@ def main():
     if idx.vectors is None:
         print("(embeddings not built yet: keyword search only)", file=sys.stderr)
     hits = idx.search(args.query, args.k, kind=args.kind, since=args.since, until=args.until, module=args.module,
-                      **{"class": args.class_}, path=args.path, author=args.author)
+                      **{"class": args.class_}, path=args.path, author=args.author, label=args.label)
     for h in hits:
         where = f" {h['path']}" if h["path"] else ""
-        print(f"{h['score']:.4f} {h['kind']:6} {h['ref']:12} {h['date']} {h['author']}{where}\n"
+        tags = f" [{h['labels'].strip(',')}]" if h.get("labels") else ""
+        print(f"{h['score']:.4f} {h['kind']:6} {h['ref']:12} {h['date']} {h['author']}{where}{tags}\n"
               f"    {h['title'][:90]}\n    {' '.join(h['text'].split())[:220]}\n")
 
 

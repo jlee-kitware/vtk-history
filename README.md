@@ -16,7 +16,9 @@ This work is part of an NIH-funded effort on VTK maintenance.
 | Review conventions | 217 conventions distilled from 1,490 review comments, each with an estimate of how often authors act on it | Brier score 0.194 against 0.218 for the base rate, on held-out comments |
 | Clang-tidy candidates | Conventions that an existing clang-tidy check could enforce | 25 conventions, behind 15% of convention comments, match checks VTK does not enable |
 | Deprecations | Every API VTK deprecated: when, why, in which MR, and whether it was removed | |
-| Trends | Terms, code areas and themes whose share of MRs or forum topics rose or fell | |
+| Area label suggestions | Suggests an `area:` label for issues that have none, from the most similar labeled issues and MRs and the files changed by MRs that link the issue | The top suggestion is one of the maintainers' labels for 83% of 720 labeled issues, against 42% for always suggesting `area:build`; 96% for the 242 suggested with confidence 0.7 or more |
+| GitLab labels | Search filtered by label, labels shown on search results and in the briefing | |
+| Trends | Terms, code areas, themes and GitLab `area:` and `lang:` labels whose share of MRs, issues or forum topics rose or fell | |
 | Search | Keyword and meaning search over MRs, issues, review threads, forum posts, blog posts, docs and release notes | |
 | Commit index | 79,907 commits on master since 1994, with the functions each changed and, for 25,667 of them, the MR that merged it | |
 
@@ -74,6 +76,7 @@ The steps run in this order. `refresh.sh` runs all of them after the first sync 
 7. **Trends.** `python trends/discover_terms.py` and `python trends/discover_themes.py`
 8. **Search index.** `python index/build_index.py` (about 104,000 documents; embedding takes a few hours on one GPU)
 9. **Commit index.** `python index/commits.py build`, then `python index/commits.py embed` (about 80,000 commits, about 4 hours)
+10. **Labels.** `python trends/label_trends.py` for label trends, and `python triage/area_labels.py` for area label suggestions (`data/labels/area_suggestions.csv`, one row per unlabeled issue with the suggested label, its confidence, and the precision measured at that confidence). The search index stores GitLab labels when it is built; `python index/labels.py` adds them to an index built before that.
 
 ## Running the app
 
@@ -94,6 +97,7 @@ Tabs: Briefing, Review, Rules, Deprecations, Trends, Search. Every control has a
 | Predicting review concerns | `python eval/review_concerns.py --cutoff 2024-07-01` |
 | Reviewer agreement | `python eval/reviewer_agreement.py` |
 | Review agent | `python bench/build_benchmark.py`, then `python agent/evaluate.py --agent tool` and `python agent/judge_comments.py score <run directories>` |
+| Area label suggestions | `python triage/area_labels.py` (report in `data/labels/AREA_LABELS.md`) |
 | Writing fixes | `python eval/fix_suggestions.py build --n 150`, `run --model <model> [--history \| --code-history]`, `score <labels>`, then `python eval/fix_stats.py` |
 
 Runs that call OpenAI log their token use to `data/logs/openai_usage.jsonl` and stop when the logged cost reaches `OPENAI_BUDGET_USD` (default $2).
@@ -108,7 +112,8 @@ Runs that call OpenAI log their token use to `data/logs/openai_usage.jsonl` and 
 | `people/` | Reviewer expertise and suggestions |
 | `deprecations/` | Deprecation index |
 | `trends/` | Term and theme trends |
-| `index/` | Search index and commit index |
+| `index/` | Search index, commit index, and GitLab labels |
+| `triage/` | Area label suggestions for issues |
 | `ontology/` | VTK modules and classes, from the source tree |
 | `app/` | The trame app, including the MR briefing |
 | `eval/` | Evaluations of the tools |

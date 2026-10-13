@@ -45,6 +45,7 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import docs  # noqa: E402
+import labels  # noqa: E402
 
 HOST = config.OLLAMA_HOST
 EMBED_CHARS = 2000
@@ -269,7 +270,8 @@ def main():
     counts = {k: sum(1 for r in rows if r["kind"] == k) for k in ("thread", "issue", "post", "mr", "doc", "note", "class", "blog")}
     print(f"{len(rows)} units: {counts}", flush=True)
     write_rows(rows, out / "docs.sqlite")
-    print(f"wrote {out / 'docs.sqlite'}", flush=True)
+    print(f"wrote {out / 'docs.sqlite'}; {labels.apply(out / 'docs.sqlite', args.mirror)} rows with GitLab labels",
+          flush=True)
     if args.no_embed:
         return
     vectors = embed_rows(rows, args.embed_model, args.dim, out / "embed_cache.npy", Path(args.theme_cache))

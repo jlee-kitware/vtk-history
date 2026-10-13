@@ -115,7 +115,8 @@ class Briefing:
                 seen.add(ref)
                 out.append({"key": f"{kind}{ref}", "kind": label, "ref": ref, "title": h.get("title") or "",
                             "date": h["date"], "url": h.get("url") or "", "linked": ref in linked,
-                            "topic": h.get("topic") or ""})
+                            "topic": h.get("topic") or "",
+                            "labels": [l for l in (h.get("labels") or "").strip(",").split(",") if l]})
                 if len(seen) >= k:
                     break
         return out

@@ -35,8 +35,11 @@ step "reviewer expertise"
 python3 -u people/expertise.py build
 step "term trends"
 python3 -u trends/discover_terms.py --out data/trends/terms-v2
+python3 -u trends/label_trends.py
 step "search index"
 python3 -u index/build_index.py
+step "area label suggestions"
+python3 -u triage/area_labels.py
 step "themes"
 python3 -u trends/discover_themes.py --k 250 --out data/trends/k250
 step "done"

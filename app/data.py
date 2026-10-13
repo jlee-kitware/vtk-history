@@ -55,6 +55,7 @@ class Store:
         self.doc_rules = [dict(d, key=f"doc-{d['id']}") for d in docs if d["id"] in doc_only]
         self.terms = self._json("data/trends/terms-v2/terms.json")
         self.themes = self._json("data/trends/k250/themes.json")
+        self.label_trends = self._json("data/trends/labels.json")
         self._index = None
 
     def _json(self, rel):
@@ -216,9 +217,21 @@ class Store:
 
     @staticmethod
     def example_url(source, doc_id):
+        if source == "issue":
+            return f"{GITLAB}/issues/{doc_id}"
         return mr_url(doc_id) if source == "mr" else f"{DISCOURSE}/{doc_id}"
 
     def trend_rows(self, what, source, kind, common=False):
+        if what == "labels":
+            data = (self.label_trends or {}).get(source)
+            if not data:
+                return [], [], []
+            rows = [{"name": r["token"], "docs": r["docs"], "first_seen": r["first_seen"],
+                     "ratio": r["ratio"] if kind != "all" else "steady" if r["kind"] == "steady"
+                     else f"{r['ratio']} {r['kind']}",
+                     "peak": r["peak"], "series": r["series"], "examples": r.get("examples", [])}
+                    for r in data["ranked"].get(kind, [])]
+            return rows, data["quarters"], data["documents_per_quarter"]
         if what == "terms":
             data = (self.terms or {}).get(source)
             if not data:
@@ -240,9 +253,13 @@ class Store:
                          "examples": [dict(e, source=source) for e in theme["examples"][source]]})
         return rows, data["quarters"], data["documents_per_quarter"]
 
-    def search(self, query, kind=None, since=None, until=None, k=25):
+    def label_options(self):
+        return [{"title": f"{label} ({n})", "value": label} for label, n in self.index.labels()]
+
+    def search(self, query, kind=None, since=None, until=None, label=None, k=25):
         rows = []
-        for h in self.index.search_mixed(query, k=k, kind=kind or None, since=since or None, until=until or None):
+        for h in self.index.search_mixed(query, k=k, kind=kind or None, since=since or None, until=until or None,
+                                         label=label or None):
             ref = h["ref"]
             if ref.startswith("!"):
                 url = mr_url(ref[1:])
@@ -255,5 +272,6 @@ class Store:
                          "title": h["title"] or "", "path": h["path"] or "", "url": url,
                          "snippet": " ".join((h["text"] or "").split())[:400],
                          "topic": int(ref.split()[1]) if h["kind"] == "post" and ref.startswith("topic ") else None,
+                         "labels": [l for l in (h.get("labels") or "").strip(",").split(",") if l],
                          "other_kind": bool(h.get("other_kind"))})
         return rows
