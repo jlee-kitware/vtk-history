@@ -23,6 +23,11 @@ Usage:
   python trends/discover_terms.py
 """
 
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import config  # noqa: E402
 import argparse
 import glob
 import html
@@ -186,7 +191,7 @@ def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--mirror", default="data/vtk-history")
     p.add_argument("--discourse", default="data/discourse-history")
-    p.add_argument("--repo", default="/home/jlee/gitsync/vtk")
+    p.add_argument("--repo", default=config.VTK_REPO)
     p.add_argument("--last-quarter", default="2026Q2", help="last complete quarter included in the analysis")
     p.add_argument("--top", type=int, default=40)
     p.add_argument("--out", default="data/trends")

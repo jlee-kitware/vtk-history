@@ -5,9 +5,14 @@ The date is the newest commit among the lines the quote spans (git blame), so it
 earlier than the text itself. A quote that can't be located gets its file's newest commit date.
 The benchmark uses these dates to hide doc rules written after an MR was reviewed.
 
-Usage: python rules/doc_rule_dates.py [--repo /home/jlee/gitsync/vtk]
+Usage: python rules/doc_rule_dates.py [--repo $VTK_REPO]
 """
 
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import config  # noqa: E402
 import argparse
 import json
 import re
@@ -58,7 +63,7 @@ def day(ts):
 
 def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--repo", default="/home/jlee/gitsync/vtk")
+    p.add_argument("--repo", default=config.VTK_REPO)
     p.add_argument("--rules", default="data/doc_rules.json")
     p.add_argument("--out", default="data/doc_rule_dates.json")
     args = p.parse_args()

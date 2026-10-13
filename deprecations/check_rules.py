@@ -13,6 +13,11 @@ Usage:
   python deprecations/check_rules.py
 """
 
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import config  # noqa: E402
 import argparse
 import functools
 import json
@@ -68,7 +73,7 @@ def main():
     p.add_argument("--rules", default="data/rules_verified.json")
     p.add_argument("--index", default="data/deprecations/index.jsonl")
     p.add_argument("--out", default="data/deprecations/RULE_CONFLICTS.md")
-    p.add_argument("--repo", default="/home/jlee/gitsync/vtk")
+    p.add_argument("--repo", default=config.VTK_REPO)
     args = p.parse_args()
 
     by_symbol = load_index(args.index)

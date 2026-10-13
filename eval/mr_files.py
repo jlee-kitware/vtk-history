@@ -5,13 +5,18 @@ commented on. Writes data/eval/mr_files.json: {iid: [[path, module], ...]}.
 Usage: python eval/mr_files.py [--since 2024-07-01]
 """
 
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import config  # noqa: E402
 import argparse
 import json
 import subprocess
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-REPO = "/home/jlee/gitsync/vtk"
+REPO = config.VTK_REPO
 
 
 def main():

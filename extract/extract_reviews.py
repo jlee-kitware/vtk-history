@@ -22,9 +22,14 @@ Revisions missing from the local clone (force-pushed MR revisions) are fetched f
 the upstream remote by hash, in batches.
 
 Usage:
-  python extract/extract_reviews.py --mirror data/vtk-history --repo /home/jlee/gitsync/vtk
+  python extract/extract_reviews.py --mirror data/vtk-history --repo $VTK_REPO
 """
 
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import config  # noqa: E402
 import argparse
 import json
 import re
@@ -235,7 +240,7 @@ def examples(record, repo, entities=None):
 def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--mirror", default="data/vtk-history")
-    p.add_argument("--repo", default="/home/jlee/gitsync/vtk")
+    p.add_argument("--repo", default=config.VTK_REPO)
     p.add_argument("--remote", default="upstream")
     p.add_argument("--out", default="data/review_examples.jsonl")
     p.add_argument("--no-fetch", action="store_true", help="use only revisions already in the local clone")

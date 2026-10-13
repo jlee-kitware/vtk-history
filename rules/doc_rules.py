@@ -13,6 +13,11 @@ Usage:
   python rules/doc_rules.py
 """
 
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import config  # noqa: E402
 import argparse
 import json
 import re
@@ -23,7 +28,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-HOST = "http://192.168.50.23:11435"
+HOST = config.OLLAMA_HOST
 DOCS = "Documentation/docs"
 GUIDE_FILES = ["developers_guide/coding_conventions.md", "developers_guide/git/deprecation.md",
                "developers_guide/git/develop.md", "developers_guide/testing.md"]
@@ -108,7 +113,7 @@ def extract(model, file, heading, text):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--repo", default="/home/jlee/gitsync/vtk")
+    ap.add_argument("--repo", default=config.VTK_REPO)
     ap.add_argument("--ref", default="upstream/master")
     ap.add_argument("--model", default="qwen3-coder-next:q4_K_M")
     ap.add_argument("--out", default=str(ROOT / "data/doc_rules.json"))

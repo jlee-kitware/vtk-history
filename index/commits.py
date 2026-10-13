@@ -15,6 +15,11 @@ Usage:
   python index/commits.py search "vtkOpenGLRenderWindow::Initialize context creation" --until 2025-01-01
 """
 
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import config  # noqa: E402
 import argparse
 import json
 import re
@@ -32,7 +37,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "index"))
 from search import HOST, INSTRUCT, RRF_K  # noqa: E402
 
-REPO = "/home/jlee/gitsync/vtk"
+REPO = config.VTK_REPO
 BRANCH = "upstream/master"
 DB = ROOT / "data/index/commits.sqlite"
 VECTORS = ROOT / "data/index/commit_vectors.npy"

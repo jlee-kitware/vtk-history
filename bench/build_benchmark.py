@@ -15,6 +15,11 @@ Usage:
   python bench/build_benchmark.py --count 200
 """
 
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import config  # noqa: E402
 import argparse
 import json
 import random
@@ -37,7 +42,7 @@ def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--examples", default="data/review_examples.jsonl")
     p.add_argument("--labels", default="data/review_labels.jsonl")
-    p.add_argument("--repo", default="/home/jlee/gitsync/vtk")
+    p.add_argument("--repo", default=config.VTK_REPO)
     p.add_argument("--cutoff", default="2026-01-01")
     p.add_argument("--target-branch", default="master")
     p.add_argument("--min-answers", type=int, default=2)

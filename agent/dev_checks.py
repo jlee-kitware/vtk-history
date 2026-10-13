@@ -16,6 +16,11 @@ Usage:
   python agent/dev_checks.py --base <sha> --head <sha>
 """
 
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import config  # noqa: E402
 import argparse
 import fcntl
 import json
@@ -27,8 +32,8 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-WORKTREE = Path(os.environ.get("VTK_REVIEW_WORKTREE", "/home/jlee/gitsync/vtk-review-wt"))
-BUILD = Path(os.environ.get("VTK_REVIEW_BUILD", "/home/jlee/gitsync/vtk-review-build"))
+WORKTREE = Path(config.WORKTREE)
+BUILD = Path(config.BUILD)
 BIN = Path.home() / ".local/bin"
 CXX = re.compile(r"\.(cxx|cpp|cc|c|mm)$")
 HEADER = re.compile(r"\.(h|hxx|txx)$")
@@ -211,7 +216,7 @@ def main():
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     from review import hunks
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--repo", default="/home/jlee/gitsync/vtk")
+    p.add_argument("--repo", default=config.VTK_REPO)
     p.add_argument("--base", required=True)
     p.add_argument("--head", required=True)
     args = p.parse_args()

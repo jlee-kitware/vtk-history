@@ -9,6 +9,11 @@ rule contradicts a configured tool or names a deprecated API. rules/estimate.py'
 
 The factors below are reported beside the estimate as verification. Their points are kept for
 comparison but no longer set the level: fit as predictors, none had a weight distinguishable
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import config  # noqa: E402
 from zero (python rules/estimate.py factors).
 
 Factors:
@@ -133,7 +138,7 @@ def main():
     out = {}
     for r in rules:
         key = rule_key(r)
-        out[key] = score(r, examples, baseline, bool(conflicts(r, by_symbol, "/home/jlee/gitsync/vtk")), docs.get(key),
+        out[key] = score(r, examples, baseline, bool(conflicts(r, by_symbol, config.VTK_REPO)), docs.get(key),
                          tools.get(key), automatable.get(key))
     sys.path.insert(0, str(ROOT / "rules"))
     import adjusted

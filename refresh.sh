@@ -3,6 +3,8 @@
 # Waits for any running benchmark, since labeling and embedding share the Spark with it.
 # Usage: ./refresh.sh            (run detached: setsid nohup ./refresh.sh > data/logs/refresh.log 2>&1 &)
 cd "$(dirname "$0")"
+[ -f .env ] && { set -a; . ./.env; set +a; }
+VTK_REPO=${VTK_REPO:-../vtk}
 set -e
 step() { echo "== $1 $(date '+%F %T')"; }
 
@@ -14,7 +16,7 @@ done
 step "sync Kitware blog"
 python3 -u mirror/blog_mirror.py sync
 step "fetch vtk"
-git -C /home/jlee/gitsync/vtk fetch -q upstream master
+git -C "$VTK_REPO" fetch -q upstream master
 step "extract review threads"
 python3 -u extract/extract_reviews.py
 step "label new threads"

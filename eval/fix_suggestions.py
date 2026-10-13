@@ -10,6 +10,11 @@ revised window; it is scored against the author's change.
   score   compare with the author's change, and ask the local judge whether the fix addresses the comment
 """
 
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import config  # noqa: E402
 import argparse
 import difflib
 import json
@@ -22,7 +27,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "agent"))
-REPO = "/home/jlee/gitsync/vtk"
+REPO = config.VTK_REPO
 PAIRS = ROOT / "data/eval/fix_pairs.jsonl"
 RUNS = ROOT / "data/eval/fix_runs"
 CONTEXT = 30

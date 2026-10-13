@@ -24,7 +24,7 @@ Usage:
   export GITLAB_TOKEN=...
   python mirror/gitlab_mirror.py count
   python mirror/gitlab_mirror.py sync --limit 200
-  python mirror/gitlab_mirror.py sync --repo /home/jlee/gitsync/vtk
+  python mirror/gitlab_mirror.py sync --repo $VTK_REPO
 """
 
 import argparse

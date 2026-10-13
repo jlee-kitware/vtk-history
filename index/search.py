@@ -15,6 +15,11 @@ Usage:
   python index/search.py "ghost cells in parallel filters" --kind thread --until 2026-01-01
 """
 
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import config  # noqa: E402
 import argparse
 import json
 import re
@@ -26,7 +31,7 @@ from pathlib import Path
 
 import numpy as np
 
-HOST = "http://192.168.50.23:11435"
+HOST = config.OLLAMA_HOST
 INSTRUCT = ("Instruct: Given a question or code change about the VTK library, retrieve past code review discussions, "
             "merge requests, issues, and forum posts that are relevant\nQuery: ")
 RRF_K = 60

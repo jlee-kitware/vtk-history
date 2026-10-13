@@ -14,6 +14,11 @@ Usage:
   python rules/draft_rules.py --threshold 0.25
 """
 
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import config  # noqa: E402
 import argparse
 import json
 import re
@@ -27,7 +32,7 @@ from pathlib import Path
 import numpy as np
 from scipy.cluster.hierarchy import fcluster, linkage
 
-HOST = "http://192.168.50.23:11435"
+HOST = config.OLLAMA_HOST
 
 RULE_PROMPT = """These are conventions that VTK code reviewers stated in separate merge request reviews, each with the reviewer's own words as evidence. They were grouped because they appear to express the same rule.
 

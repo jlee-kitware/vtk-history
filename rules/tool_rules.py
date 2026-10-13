@@ -16,6 +16,11 @@ Usage:
   python rules/tool_rules.py
 """
 
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import config  # noqa: E402
 import argparse
 import glob
 import json
@@ -209,7 +214,7 @@ def ghostflow_rules():
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--repo", default="/home/jlee/gitsync/vtk")
+    ap.add_argument("--repo", default=config.VTK_REPO)
     ap.add_argument("--ref", default="upstream/master")
     ap.add_argument("--model", default="qwen3-coder-next:q4_K_M")
     ap.add_argument("--force", action="store_true", help="rebuild even if no tool configuration changed")

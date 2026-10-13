@@ -12,9 +12,14 @@
 Findings are facts from the tools, reported apart from the agent's review comments.
 
 Usage:
-  python agent/tool_checks.py <base> <head> [--repo /home/jlee/gitsync/vtk]
+  python agent/tool_checks.py <base> <head> [--repo $VTK_REPO]
 """
 
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import config  # noqa: E402
 import argparse
 import difflib
 import re
@@ -165,7 +170,7 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("base")
     ap.add_argument("head")
-    ap.add_argument("--repo", default="/home/jlee/gitsync/vtk")
+    ap.add_argument("--repo", default=config.VTK_REPO)
     args = ap.parse_args()
     for f in check(args.repo, args.base, args.head):
         where = f"{f['path']}:{f['line']}" if f["line"] else (f["path"] or "")

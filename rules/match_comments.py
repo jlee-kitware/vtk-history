@@ -21,6 +21,11 @@ Usage:
   python rules/match_comments.py match
 """
 
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import config  # noqa: E402
 import argparse
 import json
 import os
@@ -34,7 +39,7 @@ from pathlib import Path
 import numpy as np
 
 ROOT = Path(__file__).resolve().parents[1]
-HOST = "http://192.168.50.23:11435"
+HOST = config.OLLAMA_HOST
 MODEL = os.environ.get("MATCH_MODEL", "qwen3-coder-next:q4_K_M")
 OUT = ROOT / "data/rule_matches.json"
 CACHE = ROOT / "data/rule_match_cache.jsonl"

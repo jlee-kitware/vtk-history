@@ -5,6 +5,11 @@ edit, or reject is reviewable. A rule is keyed by a hash of its supporting threa
 decision stays attached to the same evidence when rules are regenerated and renumbered.
 """
 
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import config  # noqa: E402
 import getpass
 import hashlib
 import json
@@ -32,7 +37,7 @@ def rule_key(rule):
 
 
 class Store:
-    def __init__(self, repo="/home/jlee/gitsync/vtk"):
+    def __init__(self, repo=config.VTK_REPO):
         self.repo = repo
         self.rules = json.loads((ROOT / "data/rules_verified.json").read_text())["rules"]
         self.by_symbol = load_index(ROOT / "data/deprecations/index.jsonl")

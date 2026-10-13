@@ -14,6 +14,11 @@ Usage:
   python deprecations/build_index.py
 """
 
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import config  # noqa: E402
 import argparse
 import glob
 import json
@@ -139,7 +144,7 @@ def load_mrs(mirror):
 
 def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--repo", default="/home/jlee/gitsync/vtk")
+    p.add_argument("--repo", default=config.VTK_REPO)
     p.add_argument("--ref", default=None, help="branch to walk (default: first of upstream/master, origin/master, master)")
     p.add_argument("--mirror", default="data/vtk-history")
     p.add_argument("--out", default="data/deprecations")

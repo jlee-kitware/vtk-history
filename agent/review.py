@@ -17,6 +17,11 @@ Usage:
   python agent/review.py --base <sha> --head <sha> --until 2025-12-17
 """
 
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import config  # noqa: E402
 import argparse
 import json
 import re
@@ -30,7 +35,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "index"))
 from search import Index  # noqa: E402
 import llm  # noqa: E402
 
-HOST = "http://192.168.50.23:11435"
+HOST = config.OLLAMA_HOST
 SKIP_PATH = re.compile(r"^ThirdParty/|/Testing/Data/|/Baseline/|\.(png|jpg|sha512|md5|vtk|vtp|vtu|vti)$")
 IDENT = re.compile(r"\b[A-Za-z_]\w{3,}\b")
 MAX_HUNK_LINES = 120
@@ -303,7 +308,7 @@ class Reviewer:
 
 def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--repo", default="/home/jlee/gitsync/vtk")
+    p.add_argument("--repo", default=config.VTK_REPO)
     p.add_argument("--base", required=True)
     p.add_argument("--head", required=True)
     p.add_argument("--title", default="")

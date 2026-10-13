@@ -4,6 +4,17 @@ A code review agent for VTK, built from VTK's own review history: merge request 
 
 The agent reads a local mirror of that history. It never queries the GitLab API directly.
 
+## Setup
+
+```bash
+pip install -r requirements.txt
+cp .env.example .env    # then edit: VTK clone, Ollama server, tokens
+```
+
+`config.py` reads `.env` and the environment. By default it expects a VTK clone at `../vtk`, beside this repository,
+with the `upstream` remote (https://gitlab.kitware.com/vtk/vtk.git) fetched, and an Ollama server on
+`http://localhost:11434`. The data the tools build goes in `data/`, which git ignores.
+
 ## Plan
 
 1. **Mirror.** Sync public MR and issue discussions into a git repository, one JSON file per item. (`mirror/`, done)
@@ -38,7 +49,7 @@ Added in this order; each goes through the same mirror, extract, label, and inde
 ## Review examples
 
 ```bash
-python extract/extract_reviews.py --mirror data/vtk-history --repo /home/jlee/gitsync/vtk
+python extract/extract_reviews.py --mirror data/vtk-history --repo $VTK_REPO
 ```
 
 Writes `data/review_examples.jsonl`, one review thread per line, tagged `line` (with the diff hunk and surrounding source at the reviewed revision), `legacy` (pre-2016 line comments whose positions GitLab no longer has), `general`, or `approval`. Merge robot and CI bot messages, robot command lines, and mention-only comments are removed. Revisions missing from the clone are fetched from `upstream` by hash.
@@ -54,7 +65,7 @@ pip install -r requirements.txt
 export GITLAB_TOKEN=...
 python mirror/gitlab_mirror.py count
 python mirror/gitlab_mirror.py sync --limit 200                   # trial run, sync point not saved
-python mirror/gitlab_mirror.py sync --repo /home/jlee/gitsync/vtk # full history, then incremental
+python mirror/gitlab_mirror.py sync --repo $VTK_REPO # full history, then incremental
 ```
 
 The first full sync is about 20,000 requests at one per second (5 to 6 hours). Tell the GitLab administrators the window beforehand and run it overnight. The script backs off on HTTP 429 and 5xx responses, and an interrupted sync resumes where it stopped. Later syncs fetch only items updated since the previous one.

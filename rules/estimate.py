@@ -38,6 +38,11 @@ Usage:
   python rules/estimate.py fit        (used by rules/confidence.py)
 """
 
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import config  # noqa: E402
 import json
 import math
 import os
@@ -137,7 +142,7 @@ def load():
     tools, _ = load_tool_matches()
     by_symbol = load_index(ROOT / "data/deprecations/index.jsonl")
     extra = {rule_key(r): (docs.get(rule_key(r)), tools.get(rule_key(r)),
-                           bool(conflicts(r, by_symbol, "/home/jlee/gitsync/vtk"))) for r in rules}
+                           bool(conflicts(r, by_symbol, config.VTK_REPO))) for r in rules}
     return rules, examples, extra, rule_key
 
 

@@ -11,9 +11,14 @@ Classes are found by VTK's one-class-per-header convention: a header vtkFoo.h th
 declares class vtkFoo. Use module_for_path() to map a source path to its module.
 
 Usage:
-  python ontology/build_entities.py --vtk /home/jlee/gitsync/vtk
+  python ontology/build_entities.py --vtk $VTK_REPO
 """
 
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import config  # noqa: E402
 import argparse
 import json
 import re
@@ -115,7 +120,7 @@ def module_for_path(path, dir_to_module):
 
 def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--vtk", default="/home/jlee/gitsync/vtk")
+    p.add_argument("--vtk", default=config.VTK_REPO)
     p.add_argument("--out", default="ontology/entities.json")
     args = p.parse_args()
 

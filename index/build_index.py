@@ -24,6 +24,11 @@ Usage:
   python index/build_index.py --no-embed   # rows and full text only
 """
 
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import config  # noqa: E402
 import argparse
 import glob
 import html
@@ -41,7 +46,7 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import docs  # noqa: E402
 
-HOST = "http://192.168.50.23:11435"
+HOST = config.OLLAMA_HOST
 EMBED_CHARS = 2000
 BATCH = 32
 SKIP_KINDS = {"approval"}
@@ -243,7 +248,7 @@ def main():
     p.add_argument("--out", default="data/index")
     p.add_argument("--no-embed", action="store_true")
     p.add_argument("--no-docs", action="store_true", help="leave out VTK documentation, release notes, and class docs")
-    p.add_argument("--vtk-repo", default="/home/jlee/gitsync/vtk")
+    p.add_argument("--vtk-repo", default=config.VTK_REPO)
     args = p.parse_args()
 
     out = Path(args.out)

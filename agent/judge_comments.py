@@ -18,6 +18,11 @@ Usage:
   python agent/judge_comments.py score data/benchmark/runs-v5/before data/benchmark/runs-v5/after ...
 """
 
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import config  # noqa: E402
 import argparse
 import hashlib
 import json
@@ -32,7 +37,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from review import HOST, hunks  # noqa: E402
 
-REPO = "/home/jlee/gitsync/vtk"
+REPO = config.VTK_REPO
 MR_DIR = Path("data/vtk-history/merge_requests")
 CACHE = Path("data/benchmark/judge_cache.jsonl")
 WINDOW = 3

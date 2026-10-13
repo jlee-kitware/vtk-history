@@ -8,6 +8,11 @@ Ratings of agent comments go to ratings/ratings.jsonl, one line per rating, trac
 The latest rating of a comment by a given person is the one that counts.
 """
 
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import config  # noqa: E402
 import getpass
 import glob
 import hashlib
@@ -36,7 +41,7 @@ def comment_key(iid, head, c):
 
 
 class Reviews:
-    def __init__(self, repo="/home/jlee/gitsync/vtk", mirror=ROOT / "data/vtk-history"):
+    def __init__(self, repo=config.VTK_REPO, mirror=ROOT / "data/vtk-history"):
         self.repo, self.mirror = repo, Path(mirror)
 
     def mr(self, iid):

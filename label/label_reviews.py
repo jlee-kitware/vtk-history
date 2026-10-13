@@ -17,6 +17,11 @@ Usage:
   python label/label_reviews.py --examples data/review_examples.jsonl --out data/review_labels.jsonl
 """
 
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import config  # noqa: E402
 import argparse
 import json
 import re
@@ -104,7 +109,7 @@ def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--examples", default="data/review_examples.jsonl")
     p.add_argument("--out", default="data/review_labels.jsonl")
-    p.add_argument("--host", default="http://192.168.50.23:11435")
+    p.add_argument("--host", default=config.OLLAMA_HOST)
     p.add_argument("--model", default="qwen3-coder-next:q4_K_M")
     p.add_argument("--parallel", type=int, default=2, help="requests in flight; match OLLAMA_NUM_PARALLEL")
     p.add_argument("--limit", type=int, default=0)

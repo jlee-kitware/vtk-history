@@ -14,6 +14,11 @@ Usage:
   python trends/discover_themes.py --k 120
 """
 
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import config  # noqa: E402
 import argparse
 import glob
 import json
@@ -30,7 +35,7 @@ from scipy.cluster.vq import kmeans2
 sys.path.insert(0, str(Path(__file__).parent))
 from discover_terms import all_quarters, analyze, quarter, strip_html  # noqa: E402
 
-HOST = "http://192.168.50.23:11435"
+HOST = config.OLLAMA_HOST
 MAX_CHARS = 1500
 BATCH = 32
 NAME_PROMPT = """These are titles of VTK merge requests and VTK forum topics that were grouped together because their content is similar.

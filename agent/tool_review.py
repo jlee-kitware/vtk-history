@@ -21,6 +21,11 @@ Usage:
   python agent/tool_review.py --base <sha> --head <sha> --until 2025-12-17 --title "..."
 """
 
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import config  # noqa: E402
 import argparse
 import json
 import subprocess
@@ -331,7 +336,7 @@ class ToolReviewer(Reviewer):
 
 def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--repo", default="/home/jlee/gitsync/vtk")
+    p.add_argument("--repo", default=config.VTK_REPO)
     p.add_argument("--base", required=True)
     p.add_argument("--head", required=True)
     p.add_argument("--title", default="")

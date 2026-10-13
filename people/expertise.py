@@ -15,6 +15,11 @@ Usage:
   python people/expertise.py quality                # are higher-ranked reviewers' comments acted on more?
 """
 
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import config  # noqa: E402
 import argparse
 import glob
 import json
@@ -29,7 +34,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 MIRROR = ROOT / "data/vtk-history/merge_requests"
 TABLE = ROOT / "data/people/mrs.jsonl"
-REPO = "/home/jlee/gitsync/vtk"
+REPO = config.VTK_REPO
 BOTS = {"kwrobot", "ghost", "vtk-bot", "kitware-robot"}
 LEVELS = ((0, 1.0), (1, 0.5), (2, float(os.environ.get("EXP_MODULE", 0.1))))
 AUTHOR_WEIGHT = float(os.environ.get("EXP_AUTHOR", 0.6))

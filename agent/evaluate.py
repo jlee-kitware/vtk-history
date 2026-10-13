@@ -18,6 +18,11 @@ Usage:
   python agent/evaluate.py --limit 20 --model gpt-oss:120b
 """
 
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import config  # noqa: E402
 import argparse
 import json
 import random
@@ -104,7 +109,7 @@ def main():
     p.add_argument("--benchmark", default="data/benchmark/benchmark.jsonl")
     p.add_argument("--examples", default="data/review_examples.jsonl")
     p.add_argument("--rules", default="data/rules_verified.json")
-    p.add_argument("--repo", default="/home/jlee/gitsync/vtk")
+    p.add_argument("--repo", default=config.VTK_REPO)
     p.add_argument("--model", default="qwen3-coder-next:q4_K_M")
     p.add_argument("--judge", default="qwen3-coder-next:q4_K_M")
     p.add_argument("--limit", type=int, default=0)

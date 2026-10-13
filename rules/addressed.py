@@ -15,6 +15,11 @@ Usage:
   python rules/addressed.py label          (every line comment that supports a rule)
 """
 
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import config  # noqa: E402
 import argparse
 import json
 import random
@@ -26,8 +31,8 @@ import urllib.request
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-REPO = "/home/jlee/gitsync/vtk"
-HOST = "http://192.168.50.23:11435"
+REPO = config.VTK_REPO
+HOST = config.OLLAMA_HOST
 MODEL = "gpt-oss:120b"
 OUT = ROOT / "data/addressed_labels.jsonl"
 VERSION = 2
