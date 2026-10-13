@@ -1,73 +1,123 @@
-# vtk-review-agent
+# vtk-history
 
-A code review agent for VTK, built from VTK's own review history: merge request discussions, issues, and commit messages from gitlab.kitware.com.
+Tools that make VTK's development history usable for maintenance work, and the evaluations that measure how well each one works.
 
-The agent reads a local mirror of that history. It never queries the GitLab API directly.
+VTK's history holds knowledge maintainers need: why code is written the way it is, what was tried before, who knows each part, and what reviewers expect. It is spread across 11 years of GitLab merge requests (MRs) and review discussions, 8 years of Discourse threads, and 32 years of commits. This project mirrors that history locally, indexes it, and builds tools on it. Each tool is tested by replaying past MRs with only the history that existed before each one, and comparing against what actually happened.
+
+This work is part of an NIH-funded effort on VTK maintenance.
+
+## What it provides
+
+| Tool | What it does | Measured |
+| --- | --- | --- |
+| Related history | Finds earlier issues, MRs and forum threads related to an MR from its title and description | The issue an MR fixes is in the top 5 of about 3,700 issues for 84% of MRs (300 tested) |
+| Reviewer suggestions | Ranks people by recent reviews and commits on the files an MR changes, with their usual response time | An actual reviewer is in the top 3 for 76% of MRs (1,656 tested), against 67% for the most active reviewers |
+| MR briefing | Gathers related history, suggested reviewers, conventions reviewers applied to the changed files, deprecated APIs in the added code, and recent commits on those files | About 4 seconds per MR |
+| Review conventions | 217 conventions distilled from 1,490 review comments, each with an estimate of how often authors act on it | Brier score 0.194 against 0.218 for the base rate, on held-out comments |
+| Clang-tidy candidates | Conventions that an existing clang-tidy check could enforce | 25 conventions, behind 15% of convention comments, match checks VTK does not enable |
+| Deprecations | Every API VTK deprecated: when, why, in which MR, and whether it was removed | |
+| Trends | Terms, code areas and themes whose share of MRs or forum topics rose or fell | |
+| Search | Keyword and meaning search over MRs, issues, review threads, forum posts, blog posts, docs and release notes | |
+| Commit index | 79,907 commits on master since 1994, with the functions each changed and, for 25,667 of them, the MR that merged it | |
+
+The app (`app/`) presents all of these in a browser.
+
+## What did not work
+
+These results are negative and are kept because they are measured.
+
+- An AI review agent (a local model, and gpt-5.4-mini through OpenAI) raised the same concern as a VTK reviewer for about 1 comment in 25. Adding mined conventions, tool results, or compiler and clang-tidy output did not change that. For scale, two VTK reviewers on the same MR comment within 5 lines of each other only 10 to 17% of the time.
+- Ranking conventions by file history did not predict which one a reviewer would raise (19% in the top 10, against 20% for the 10 most common).
+- Given a reviewer's comment, gpt-5.4-mini wrote an acceptable fix for 53% of 150 comments. Examples drawn from the history (similar comments, random earlier fixes, or earlier commits to the same function) did not improve it; differences stayed within the model's run-to-run variation.
+
+The code for these is in `agent/` and `eval/`.
 
 ## Setup
 
-```bash
-pip install -r requirements.txt
-cp .env.example .env    # then edit: VTK clone, Ollama server, tokens
-```
-
-`config.py` reads `.env` and the environment. By default it expects a VTK clone at `../vtk`, beside this repository,
-with the `upstream` remote (https://gitlab.kitware.com/vtk/vtk.git) fetched, and an Ollama server on
-`http://localhost:11434`. The data the tools build goes in `data/`, which git ignores.
-
-## Plan
-
-1. **Mirror.** Sync public MR and issue discussions into a git repository, one JSON file per item. (`mirror/`, done)
-2. **Review examples.** For each review thread, recover the code the reviewer saw from the local VTK clone and record whether the author changed it afterward. (`extract/`, done)
-3. **Rules.** Cluster the examples into recurring review conventions and curate them into `REVIEW_RULES.md`, with links to the source comments.
-4. **Design dossiers.** One summary per module or major class: its purpose, the key decisions and the MRs where they were made, approaches tried and reverted, known pitfalls, and deprecations. Built from git history, MR discussions, and issues, and updated as new MRs merge.
-5. **Index.** Retrieve past reviews by file path, module, VTK APIs touched, and embedding similarity.
-6. **Agent.** An agent loop that investigates each change with tools before writing findings (see below). Every finding cites a rule, a past review, or a commit; findings without a citation are dropped.
-7. **Evaluation.** Index only MRs merged before a cutoff date. Run the agent on the first submitted version of later MRs and compare its findings to what human reviewers said (precision, recall, findings per MR).
-8. **Deployment.** Shadow mode first (private reports), then on request, then by default. Rejected findings feed back into the rules and dossiers.
-
-## Agent tools
-
-The agent chooses which of these to use for each change:
-
-- `search_reviews`: past review threads on similar code, by path, module, API, and text
-- `file_history`: `git log`, `git blame`, and the MRs behind a file or line range
-- `design_dossier`: the dossier for a module or class
-- `review_rules`: the curated conventions that apply to the change
-- `search_issues`: related bug reports, including fixes that were reverted
-- `read_code`: surrounding source, callers, and tests at the MR's revision
-
-## Data sources
-
-Added in this order; each goes through the same mirror, extract, label, and index steps.
-
-1. GitLab merge requests and issues (`mirror/gitlab_mirror.py`). Issues include the Mantis reports migrated in 2016 (titles and report text).
-2. VTK Discourse (`mirror/discourse_mirror.py`): about 7,800 public topics, one file per topic, about 8,000 requests. Posts are CC BY-NC-SA 3.0, recorded on each file.
-3. Mantis discussions (2003 to 2016), from the frozen HTML export at `vtk.org/Bug/view.php?id=N`; the IDs come from the migrated GitLab issues.
-4. The vtkusers and vtk-developers mailing lists, if the Mailman archives can be obtained.
-
-## Review examples
+Requirements: Python 3.10 or newer, git, a VTK clone, and an Ollama server for embeddings and local models.
 
 ```bash
-python extract/extract_reviews.py --mirror data/vtk-history --repo $VTK_REPO
+git clone https://gitlab.kitware.com/vtk/vtk.git ../vtk      # or point VTK_REPO at an existing clone
+git -C ../vtk remote add upstream https://gitlab.kitware.com/vtk/vtk.git
+pip install -r requirements.txt numpy
+cp .env.example .env                                         # then edit
 ```
 
-Writes `data/review_examples.jsonl`, one review thread per line, tagged `line` (with the diff hunk and surrounding source at the reviewed revision), `legacy` (pre-2016 line comments whose positions GitLab no longer has), `general`, or `approval`. Merge robot and CI bot messages, robot command lines, and mention-only comments are removed. Revisions missing from the clone are fetched from `upstream` by hash.
+`config.py` reads `.env` and the environment:
 
-## Mirror
+| Setting | Default | Used for |
+| --- | --- | --- |
+| `VTK_REPO` | `../vtk` | Code, history, and the diffs behind review comments |
+| `OLLAMA_HOST` | `http://localhost:11434` | Embeddings (qwen3-embedding) and local models (qwen3-coder-next, gpt-oss:120b) |
+| `GITLAB_TOKEN` | none | Mirroring GitLab discussions |
+| `OPENAI_API_KEY` | none | Only the OpenAI experiments |
+| `VTK_REVIEW_WORKTREE`, `VTK_REVIEW_BUILD` | `../vtk-review-wt`, `../vtk-review-build` | Only the developer-check experiment |
 
-The mirror stores every public discussion thread on VTK merge requests and issues, including line-level review comments and the diff positions they are attached to. It gets code from git, not the API: `--repo` fetches every merge request head into a local VTK clone, and diffs are reconstructed from the `base_sha` and `head_sha` recorded on each review comment. That leaves one API request per item.
+Everything the tools build goes in `data/`, which git ignores.
 
-GitLab does not serve discussions anonymously, so a token is required. Use a `read_api` token from a gitlab.kitware.com account with no project or group memberships (create it in a private browser window). That account sees only public content, so confidential issues and internal notes cannot enter the mirror. The script refuses a token whose account is a project member.
+## Building the data
+
+The steps run in this order. `refresh.sh` runs all of them after the first sync and brings the data up to date.
+
+1. **Mirror the sources.**
+   ```bash
+   python mirror/gitlab_mirror.py sync --repo $VTK_REPO    # MRs, issues and all review threads
+   python mirror/discourse_mirror.py sync                  # discourse.vtk.org topics
+   python mirror/blog_mirror.py sync                       # Kitware blog posts about VTK
+   ```
+   GitLab does not serve discussions anonymously. Use a `read_api` token from a gitlab.kitware.com account with no project or group memberships, so only public content can enter the mirror; the script refuses a token whose account is a project member. The first GitLab sync is about 20,000 requests at one per second (5 to 6 hours); tell the GitLab administrators beforehand. Later syncs fetch only what changed. The mirror is its own git repository in `data/vtk-history/`.
+2. **Extract review examples.** `python extract/extract_reviews.py` recovers the code each line comment was written on and records whether the author changed it before the MR merged.
+3. **Label threads.** `python label/label_reviews.py` tags each thread with a topic and any convention it states, using a local model.
+4. **Conventions.** `rules/draft_rules.py`, `rules/verify_rules.py` and `rules/merge_rules.py` turn labeled threads into conventions; `rules/doc_rules.py` and `rules/tool_rules.py` collect what VTK's documentation and tools already state; `rules/confidence.py` estimates follow-through.
+5. **Deprecations.** `python deprecations/build_index.py`
+6. **Reviewer expertise.** `python people/expertise.py build`
+7. **Trends.** `python trends/discover_terms.py` and `python trends/discover_themes.py`
+8. **Search index.** `python index/build_index.py` (about 104,000 documents; embedding takes a few hours on one GPU)
+9. **Commit index.** `python index/commits.py build`, then `python index/commits.py embed` (about 80,000 commits, about 4 hours)
+
+## Running the app
 
 ```bash
-pip install -r requirements.txt
-export GITLAB_TOKEN=...
-python mirror/gitlab_mirror.py count
-python mirror/gitlab_mirror.py sync --limit 200                   # trial run, sync point not saved
-python mirror/gitlab_mirror.py sync --repo $VTK_REPO # full history, then incremental
+python3 -m venv --system-site-packages ~/venvs/trame4 && ~/venvs/trame4/bin/pip install "trame>=4" trame-mui numpy
+bash app/run.sh        # serves http://localhost:8080
 ```
 
-The first full sync is about 20,000 requests at one per second (5 to 6 hours). Tell the GitLab administrators the window beforehand and run it overnight. The script backs off on HTTP 429 and 5xx responses, and an interrupted sync resumes where it stopped. Later syncs fetch only items updated since the previous one.
+Tabs: Briefing, Review, Rules, Deprecations, Trends, Search. Every control has a tooltip that says what it does.
 
-The mirror is written to `data/vtk-history/`, which is its own git repository (one commit per completed sync) and is excluded from this repository.
+## Reproducing the measurements
+
+| Result | Command |
+| --- | --- |
+| Related issues and MRs | `python eval/related_history.py` (add `--title-only` for the title-only baseline) |
+| Reviewer suggestions | `python people/expertise.py backtest --since 2025-01-01` |
+| Follow-through estimates | `python rules/adjusted.py` and `python rules/estimate.py` |
+| Predicting review concerns | `python eval/review_concerns.py --cutoff 2024-07-01` |
+| Reviewer agreement | `python eval/reviewer_agreement.py` |
+| Review agent | `python bench/build_benchmark.py`, then `python agent/evaluate.py --agent tool` and `python agent/judge_comments.py score <run directories>` |
+| Writing fixes | `python eval/fix_suggestions.py build --n 150`, `run --model <model> [--history \| --code-history]`, `score <labels>`, then `python eval/fix_stats.py` |
+
+Runs that call OpenAI log their token use to `data/logs/openai_usage.jsonl` and stop when the logged cost reaches `OPENAI_BUDGET_USD` (default $2).
+
+## Layout
+
+| Directory | Contents |
+| --- | --- |
+| `mirror/` | GitLab, Discourse and blog mirrors |
+| `extract/`, `label/` | Review examples from the mirror, and their labels |
+| `rules/` | Conventions, their verification, follow-through estimates, documented and tool rules |
+| `people/` | Reviewer expertise and suggestions |
+| `deprecations/` | Deprecation index |
+| `trends/` | Term and theme trends |
+| `index/` | Search index and commit index |
+| `ontology/` | VTK modules and classes, from the source tree |
+| `app/` | The trame app, including the MR briefing |
+| `eval/` | Evaluations of the tools |
+| `agent/`, `bench/` | The review agent, its benchmark, and the judge |
+
+## Data sources and terms
+
+All sources are public. GitLab content comes from gitlab.kitware.com/vtk/vtk. Discourse posts from discourse.vtk.org are licensed CC BY-NC-SA 3.0, which each mirrored topic records. Kitware blog posts come from the site's public API. The mirrored text keeps its original terms; the license below covers this project's code.
+
+## License
+
+BSD 3-Clause. See `LICENSE`.
