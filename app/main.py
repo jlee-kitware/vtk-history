@@ -1261,11 +1261,11 @@ def refresh_labels(**_):
     state.lb_shown = f"{len(rows):,} issues" + (f", the first {MAX_ROWS} shown" if len(rows) > MAX_ROWS else "")
 
 
-def lookup_label(iid=None):
-    iid = str(iid if iid is not None else state.lb_iid).strip().lstrip("#")
-    if not iid.isdigit() or state.lb_busy:
+def lookup_label(ref=None):
+    ref = str(ref if ref is not None else state.lb_iid).strip()
+    if not ref.lstrip("#!").isdigit() or state.lb_busy:
         return
-    asynchronous.create_task(lookup_task(int(iid)))
+    asynchronous.create_task(lookup_task(ref))
 
 
 async def lookup_task(iid):
@@ -1301,7 +1301,8 @@ def small_table(columns, items, name, cells):
 def labels_view():
     caption("Suggested area labels for VTK issues that have none, from the most similar labeled issues and "
             "merge requests, the files changed by merge requests that link the issue, and the issue template's "
-            "Language and Graphics backend lines. Nothing is applied on GitLab from here.", marginBottom="10px")
+            "Language and Graphics backend lines. The lookup also takes a merge request, using the directories it "
+            "changes. Nothing is applied on GitLab from here.", marginBottom="10px")
     with react.If(value="!lb_summary.now"):
         mui.Alert("Run python triage/area_labels.py to create the suggestions.", severity="info")
     with react.If(value="lb_summary.now"):
@@ -1340,8 +1341,9 @@ def labels_view():
                                     "lb_summary.dirs", "d", [("d.dir", {"fontFamily": MONO}), ("d.mrs", {}),
                                                              ("d.share", {})])
     with bar():
-        field("Issue number", "lb_iid", 130, on_enter=lookup_key,
-              tip="Type an issue number and press Enter to see its suggested labels")
+        field("Issue or MR", "lb_iid", 130, on_enter=lookup_key,
+              tip="An issue (#123, or just 123) or a merge request (!123); press Enter to see its suggested labels. "
+                  "A plain number that is not an issue is looked up as a merge request")
         with tipped("Suggest labels for this issue; the first lookup takes a few seconds to load the history"):
             mui.Button("Suggest", size="small", variant="contained", loading=B("lb_busy"),
                        on_click=C(lookup_label, "[lb_iid]"))
@@ -1350,9 +1352,9 @@ def labels_view():
     with react.If(value="lb_lookup"):
         with html.Div(style={**CARD, "margin": "0 0 12px"}):
             with html.Div(style={"display": "flex", "gap": "8px", "alignItems": "baseline", "flexWrap": "wrap"}):
-                link("'#' + lb_lookup.issue", "lb_lookup.url")
+                link("lb_lookup.ref", "lb_lookup.url")
                 html.Span([B("lb_lookup.title")], style={"fontWeight": 500})
-                html.Span([B("lb_lookup.state")], style=SMALL)
+                html.Span([B("lb_lookup.kind + ', ' + lb_lookup.state")], style=SMALL)
             html.Div([B("'Suggested: ' + lb_lookup.suggested + ' (confidence ' + lb_lookup.confidence + ', cutoff ' "
                         "+ lb_lookup.cutoff + ')'")], style={"marginTop": "6px", "fontWeight": 600})
             html.Div([B("'Ranked: ' + lb_lookup.ranked.map(r => r.label + ' ' + r.share).join(', ')")], style=SMALL)
@@ -1360,6 +1362,8 @@ def labels_view():
                 html.Div([B("'From the template: ' + lb_lookup.lang.join(', ')")], style=SMALL)
             with react.If(value="lb_lookup.linked.length"):
                 html.Div([B("'Linked MRs: ' + lb_lookup.linked.join(' ')")], style=SMALL)
+            with react.If(value="lb_lookup.dirs.length"):
+                html.Div([B("'Changes: ' + lb_lookup.dirs.join(', ')")], style=SMALL)
             html.Div([B("'Labels on GitLab now: ' + (lb_lookup.labels.join(', ') || 'none')")], style=SMALL)
     with bar():
         select("State", "lb_state", "lb_states", 110, tip="Open or closed issues; empty shows both")

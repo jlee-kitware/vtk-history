@@ -275,23 +275,51 @@ class Store:
                                               A.mr_dirs(ROOT / "data/index/commits.sqlite"), labels))
         return self._suggester
 
-    def suggest_labels(self, iid):
+    def suggest_labels(self, ref):
+        """Area label suggestion for '#123' or '123' (an issue, or an MR when no such issue) or '!123' (an MR)."""
         A, s = self.suggester()
-        path = ROOT / "data/vtk-history/issues" / f"{iid}.json"
+        ref = str(ref).strip()
+        number = ref.lstrip("#!")
+        if not number.isdigit():
+            return {"error": f"{ref} is not an issue or merge request number."}
+        mirror = ROOT / "data/vtk-history"
+        issue_path, mr_path = mirror / "issues" / f"{number}.json", mirror / "merge_requests" / f"{number}.json"
+        as_mr = ref.startswith("!") or (not ref.startswith("#") and not issue_path.exists())
+        path = mr_path if as_mr else issue_path
         if not path.exists():
-            return {"error": f"Issue #{iid} is not in the mirror."}
-        issue = json.loads(path.read_text())["issue"]
-        text = f"Issue #{issue['iid']}: {issue['title']}\n\n{issue.get('description') or ''}"
-        fields = A.field_labels(issue.get("description"))
-        top, conf, ranked = A.Suggester.combine(s.evidence(iid, text, fields), ("text", "files", "mr", "field"))
+            return {"error": f"{'MR !' if as_mr else 'Issue #'}{number} is not in the mirror."}
+        iid = int(number)
+        if as_mr:
+            item = json.loads(path.read_text())["merge_request"]
+            changed = None
+            if iid not in s.dirs and item.get("sha"):
+                changed = A.top_dirs(self.mr_paths(item["sha"]))
+            ev, fields, linked = s.mr_evidence(iid, changed=changed), set(), []
+        else:
+            item = json.loads(path.read_text())["issue"]
+            text = f"Issue #{iid}: {item['title']}\n\n{item.get('description') or ''}"
+            fields = A.field_labels(item.get("description"))
+            ev, linked = s.evidence(iid, text, fields), [f"!{m}" for m in sorted(s.links.get(iid, ()))]
+        top, conf, ranked = A.Suggester.combine(ev, ("text", "files", "mr", "field"))
         cut = (self.area_eval or {}).get("cutoff", 0.6)
         total = sum(v for _, v in ranked) or 1
-        return {"issue": iid, "title": issue["title"], "url": issue["web_url"], "state": issue["state"],
-                "labels": issue.get("labels") or [], "cutoff": cut, "confidence": round(conf, 2),
+        return {"ref": f"{'!' if as_mr else '#'}{iid}", "kind": "merge request" if as_mr else "issue",
+                "title": item["title"], "url": item["web_url"], "state": item["state"],
+                "labels": item.get("labels") or [], "cutoff": cut, "confidence": round(conf, 2),
                 "suggested": (top if conf >= cut else A.NO_FIT) if top else "no evidence",
                 "ranked": [{"label": l, "share": f"{v / total:.0%}"} for l, v in ranked[:5]],
-                "lang": sorted(l for l in fields if l.startswith("lang:")),
-                "linked": [f"!{m}" for m in sorted(s.links.get(iid, ()))]}
+                "lang": sorted(l for l in fields if l.startswith("lang:")), "linked": linked,
+                "dirs": sorted(s.dirs.get(iid, ()) if not as_mr or iid in s.dirs else changed or ())[:8]
+                if as_mr else []}
+
+    def mr_paths(self, head):
+        """Files an unmerged MR changes, from its head commit against master (fetched when missing)."""
+        from review_data import Reviews, git
+        reviews = Reviews(self.repo)
+        if not reviews.ensure(head):
+            return []
+        base = git(self.repo, "merge-base", "upstream/master", head).strip()
+        return git(self.repo, "diff", "--name-only", base, head).split() if base else []
 
     def label_options(self):
         return [{"title": f"{label} ({n})", "value": label} for label, n in self.index.labels()]

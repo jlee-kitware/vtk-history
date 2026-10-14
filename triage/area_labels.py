@@ -34,9 +34,13 @@ carry any area label, which shows the code areas no label covers.
 Writes data/labels/area_eval.json, data/labels/AREA_LABELS.md, and
 data/labels/area_suggestions.csv (one row per unlabeled issue, highest confidence first).
 
+A merge request gets the same text votes, plus votes from the directories it changes (its own
+labels left out), and its changed paths count toward naming a technology.
+
 Usage:
   python triage/area_labels.py                  # evaluate and write suggestions
   python triage/area_labels.py --issue 19512    # suggest for one issue
+  python triage/area_labels.py --mrs            # leave-one-out on labeled merge requests
 """
 
 import argparse
@@ -75,6 +79,7 @@ GATED = {
     "area:serialization": r"seriali|serdes|marshal",
     "area:text": r"font|freetype|\btext|label|glyph",
 }
+NOT_AN_AREA = {"Documentation/release"}
 MIN_ITEMS = 8
 K = 15
 BINS = (0.9, 0.8, 0.7, 0.6, 0.5, 0.4, 0.3, 0.0)
@@ -106,10 +111,16 @@ def load_items(mirror):
                             "fields": field_labels(i.get("description"))}
     for f in glob.glob(f"{mirror}/merge_requests/*.json"):
         m = json.load(open(f))["merge_request"]
-        mrs[m["iid"]] = {"areas": area(m.get("labels")), "created": m["created_at"][:10]}
+        mrs[m["iid"]] = {"areas": area(m.get("labels")), "created": m["created_at"][:10], "title": m["title"],
+                         "state": m["state"], "url": m["web_url"],
+                         "text": f"{m['title']}\n{COMMENT.sub('', m.get('description') or '')}"}
         for n in ISSUE.findall(f"{m['title']}\n{m.get('description') or ''}"):
             links[int(n)].add(m["iid"])
     return issues, mrs, links
+
+
+def top_dirs(paths):
+    return {"/".join(Path(p).parts[:2]) for p in paths if len(Path(p).parts) > 1} - NOT_AN_AREA
 
 
 def mr_dirs(commits_db):
@@ -117,9 +128,7 @@ def mr_dirs(commits_db):
     con = sqlite3.connect(commits_db)
     for mr, files in con.execute("SELECT mr, files FROM commits WHERE mr IS NOT NULL"):
         for path in json.loads(files or "[]"):
-            parts = Path(path).parts
-            if len(parts) > 1:
-                out[mr].add("/".join(parts[:2]))
+            out[mr] |= top_dirs([path])
     return out
 
 
@@ -186,6 +195,35 @@ class Suggester:
             out["field"] = {l: 1.0 for l in fields if l.startswith("area:")}
         return out
 
+    def mr_evidence(self, iid, gate=True, changed=None):
+        """Votes for a merge request: similar labeled items other than itself, and its changed directories
+        (from its commits on master, or `changed` for one that was not merged)."""
+        ref, mine = f"!{iid}", self.mr_areas.get(iid, set())
+        changed = self.dirs.get(iid, set()) if changed is None else changed
+        own = f"{self.mrs.get(iid, {}).get('text', '')}\n{' '.join(sorted(changed))}"
+        allowed = (lambda l: l not in GATED or re.search(GATED[l], own, re.I)) if gate else (lambda l: True)
+        out = {}
+        vec = self.vector_ref(ref)
+        if vec is not None:
+            sims = self.pool_vecs @ vec
+            votes = Counter()
+            for j in np.argsort(-sims)[:K + 1]:
+                if self.pool_refs[j] != ref:
+                    for l in self.pool_areas[j]:
+                        if allowed(l):
+                            votes[l] += float(max(sims[j], 0)) ** 4
+            out["text"] = normalize(votes)
+        files = Counter()
+        for d in changed:
+            counts = {l: n - (l in mine) for l, n in self.dir_votes.get(d, {}).items()}
+            files.update(normalize({l: n for l, n in counts.items() if n > 0 and allowed(l)}))
+        if files:
+            out["files"] = normalize(files)
+        return out
+
+    def vector_ref(self, ref):
+        return self.index.vectors[self.rowid[ref] - 1] if ref in self.rowid else None
+
     @staticmethod
     def combine(ev, use=("text", "files", "mr")):
         if "field" in ev and "field" in use:
@@ -245,6 +283,27 @@ def setup(mirror):
     return index, issues, mrs, links, mr_dirs(ROOT / "data/index/commits.sqlite"), labels
 
 
+def evaluate_mrs(args):
+    index, issues, mrs, links, dirs, labels = setup(args.mirror)
+    s = Suggester(index, issues, mrs, links, dirs, labels)
+    labeled = [m for m, v in mrs.items() if v["areas"] & labels]
+    results = {name: [] for name in ("text", "files", "combined")}
+    for m in labeled:
+        truth = mrs[m]["areas"] & labels
+        ev = s.mr_evidence(m)
+        for name, use in (("text", ("text",)), ("files", ("files",)), ("combined", ("text", "files"))):
+            top, conf, _ = Suggester.combine(ev, use)
+            if top:
+                results[name].append((conf, top in truth))
+    majority = Counter(l for m in labeled for l in mrs[m]["areas"] & labels).most_common(1)[0]
+    print(f"{len(labeled)} labeled MRs; always suggesting {majority[0]} is right for "
+          f"{sum(majority[0] in mrs[m]['areas'] for m in labeled) / len(labeled):.0%}")
+    for name, r in results.items():
+        print(f"  {name}: {len(r)} MRs with evidence, top suggestion right {sum(ok for _, ok in r) / len(r):.0%}")
+    for b in precision_table(results["combined"]):
+        print(f"  confidence >= {b['confidence_at_least']}: {b['precision']} of {b['issues']}")
+
+
 def one_issue(args):
     index, issues, mrs, links, dirs, labels = setup(args.mirror)
     s = Suggester(index, issues, mrs, links, dirs, labels)
@@ -269,9 +328,12 @@ def main():
     p.add_argument("--target", type=float, default=0.9, help="precision the cutoff must reach")
     p.add_argument("--split", default="2024-01-01", help="date for the time-split evaluation")
     p.add_argument("--issue", type=int, help="suggest labels for this issue and stop")
+    p.add_argument("--mrs", action="store_true", help="evaluate suggestions on labeled merge requests and stop")
     args = p.parse_args()
     if args.issue:
         return one_issue(args)
+    if args.mrs:
+        return evaluate_mrs(args)
 
     index, issues, mrs, links, dirs, labels = setup(args.mirror)
     s = Suggester(index, issues, mrs, links, dirs, labels)

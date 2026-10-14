@@ -85,7 +85,7 @@ python3 -m venv --system-site-packages ~/venvs/trame4 && ~/venvs/trame4/bin/pip 
 bash app/run.sh        # serves http://localhost:8080
 ```
 
-Tabs: Briefing, Review, Rules, Deprecations, Trends, Labels, Search. Labels shows what applying the area label suggestions would add, how accurate they were on issues maintainers already labeled, and a lookup for one issue. Every control has a tooltip that says what it does.
+Tabs: Briefing, Review, Rules, Deprecations, Trends, Labels, Search. Labels shows what applying the area label suggestions would add, how accurate they were on issues maintainers already labeled, and a lookup for one issue (`#123`) or merge request (`!123`). Every control has a tooltip that says what it does.
 
 ## Reproducing the measurements
 
@@ -97,7 +97,7 @@ Tabs: Briefing, Review, Rules, Deprecations, Trends, Labels, Search. Labels show
 | Predicting review concerns | `python eval/review_concerns.py --cutoff 2024-07-01` |
 | Reviewer agreement | `python eval/reviewer_agreement.py` |
 | Review agent | `python bench/build_benchmark.py`, then `python agent/evaluate.py --agent tool` and `python agent/judge_comments.py score <run directories>` |
-| Area label suggestions | `python triage/area_labels.py` (report in `data/labels/AREA_LABELS.md`) |
+| Area label suggestions | `python triage/area_labels.py` (report in `data/labels/AREA_LABELS.md`); `--mrs` for labeled merge requests |
 | Writing fixes | `python eval/fix_suggestions.py build --n 150`, `run --model <model> [--history \| --code-history]`, `score <labels>`, then `python eval/fix_stats.py` |
 
 Runs that call OpenAI log their token use to `data/logs/openai_usage.jsonl` and stop when the logged cost reaches `OPENAI_BUDGET_USD` (default $2).
