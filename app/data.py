@@ -275,31 +275,21 @@ class Store:
             self._suggester = (A, A.Suggester(self.index, issues, mrs, links,
                                               A.mr_dirs(ROOT / "data/index/commits.sqlite"), labels))
             import module_labels as ML
-            self._modules = (ML, ML.Modules(), ML.mr_files(), None)
+            lab = ML.Labeler(index=self.index)
+            lab.cutoff = (self.module_eval or {}).get("cutoff", 0.9)
+            self._modules = (ML, lab)
         return self._suggester
 
     def module_groups(self, iid, as_mr, item, unmerged_paths=None):
-        """Proposed module group labels: from changed files, linked MRs' files, or named classes."""
-        ML, mod, files, common = self._modules
-        if common is None:
-            issues = [json.loads(p.read_text())["issue"] for p in (ROOT / "data/vtk-history/issues").glob("*.json")]
-            df = Counter(c for i in issues for c in set(ML.CLASS.findall(f"{i['title']}\n{i.get('description') or ''}")))
-            common = {c for c, n in df.items() if n > ML.BOILERPLATE * len(issues)}
-            self._modules = (ML, mod, files, common)
-        if as_mr:
-            rows, source = mod.from_paths(files.get(iid) or unmerged_paths or []), "files it changes"
-        else:
-            _A, s = self._suggester
-            linked = [p for m in s.links.get(iid, ()) for p in files.get(m, [])]
-            if linked:
-                rows, source = mod.from_paths(linked), "files changed by linked MRs"
-            else:
-                text = f"{item['title']}\n{ML.COMMENT.sub('', item.get('description') or '')}"
-                rows, source = mod.from_classes(set(ML.CLASS.findall(text)) - common), "VTK classes it names"
+        """Proposed module group labels: from changed files, linked MRs' files, named classes, or similar items."""
+        ML, lab = self._modules
+        kind = "mr" if as_mr else "issue"
+        paths = unmerged_paths if as_mr and not lab.files.get(iid) else None
+        rows, source, _conf = lab.label(kind, iid, paths=paths)
         totals = ML.by_label(rows)
         modules = defaultdict(list)
         for label, module, n in rows:
-            modules[label].append(f"{module} ({n})")
+            modules[label].append(f"{module} ({n})" if n else module)
         return {"source": source, "groups": [{"label": l, "new": l in ML.NEW_LABELS, "count": n,
                                               "modules": ", ".join(modules[l][:3])} for l, n in totals.most_common(4)]}
 

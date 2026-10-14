@@ -25,6 +25,7 @@ Usage:
   python mirror/gitlab_mirror.py count
   python mirror/gitlab_mirror.py sync --limit 200
   python mirror/gitlab_mirror.py sync --repo $VTK_REPO
+  python mirror/gitlab_mirror.py files            # changed files of MRs with no commits on master
 """
 
 import argparse
@@ -86,6 +87,31 @@ class GitLab:
     def total(self, path, params=None):
         r = self.get(path, dict(params or {}, per_page=1))
         return r.headers.get("X-Total") or "more than 10,000 (GitLab omits exact totals above that)"
+
+
+def mr_files(gl, pid, out, commits_db):
+    """Changed file paths of merge requests that have no commits on master (closed, open, or merged into
+    another branch), one JSON list per MR in <out>/mr_files/. GitLab removes the branch refs of closed
+    MRs, so the API is the only source for most of them."""
+    import sqlite3
+    on_master = {m for (m,) in sqlite3.connect(commits_db).execute(
+        "SELECT DISTINCT mr FROM commits WHERE mr IS NOT NULL")} if commits_db.exists() else set()
+    target = out / "mr_files"
+    target.mkdir(exist_ok=True)
+    todo = sorted(int(p.stem) for p in (out / "merge_requests").glob("*.json")
+                  if int(p.stem) not in on_master and not (target / p.name).exists())
+    print(f"{len(todo)} merge requests without commits on master")
+    for n, iid in enumerate(todo, 1):
+        try:
+            paths = sorted({d["new_path"] for d in gl.paged(f"/projects/{pid}/merge_requests/{iid}/diffs")}
+                           )
+        except requests.HTTPError as e:
+            if e.response is None or e.response.status_code != 404:
+                raise
+            paths = []
+        (target / f"{iid}.json").write_text(json.dumps(paths))
+        if n % 100 == 0:
+            print(f"  {n}/{len(todo)} ({gl.requests} requests)", flush=True)
 
 
 def public_discussions(discussions):
@@ -170,9 +196,10 @@ def fetch_mr_refs(repo, remote):
 
 def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("mode", choices=["count", "sync"])
+    p.add_argument("mode", choices=["count", "sync", "files"])
     p.add_argument("--url", default="https://gitlab.kitware.com")
     p.add_argument("--project", default="vtk/vtk")
+    p.add_argument("--commits", default="data/index/commits.sqlite", help="commit index, for the files mode")
     p.add_argument("--out", default="data/vtk-history")
     p.add_argument("--repo", help="local clone to fetch merge request heads into")
     p.add_argument("--remote", default="upstream", help="remote in --repo that points at the upstream project")
@@ -195,6 +222,10 @@ def main():
 
     if args.mode == "count":
         count(gl, pid)
+        print(f"{gl.requests} requests")
+        return
+    if args.mode == "files":
+        mr_files(gl, pid, Path(args.out), Path(args.commits))
         print(f"{gl.requests} requests")
         return
 
