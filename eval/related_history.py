@@ -10,7 +10,7 @@ Compared: keyword search (BM25), meaning search (embeddings), the two fused (wha
 and chance (k divided by the number of items of that kind that existed then).
 
 Usage:
-  python eval/related_history.py [--n 300] [--k 1 5 10]
+  python eval/related_history.py [--n 300] [--k 1 5 10] [--index data/index-<model>]
 """
 
 import argparse
@@ -67,8 +67,11 @@ def main():
     p.add_argument("--n", type=int, default=300, help="cases per kind")
     p.add_argument("--k", type=int, nargs="+", default=[1, 5, 10])
     p.add_argument("--title-only", action="store_true", help="query with the MR title alone")
+    p.add_argument("--index", default=str(ROOT / "data/index"),
+                   help="index to search, for comparing embedding models (eval/embedding_models.py)")
     args = p.parse_args()
-    ix = Index(str(ROOT / "data/index"))
+    ix = Index(args.index)
+    print(f"embedding model: {ix.meta['model']}", flush=True)
     allc = cases(ix)
     if args.title_only:
         allc = [dict(c, query=c["query"].split("\n")[0]) for c in allc]
@@ -99,7 +102,8 @@ def main():
         if n % 50 == 0:
             print(f"  {n}/{len(sample)}", flush=True)
     (ROOT / "data/eval").mkdir(exist_ok=True)
-    (ROOT / f"data/eval/related_history{'_title' if args.title_only else ''}.json").write_text(json.dumps(results, indent=1))
+    tag = ("_title" if args.title_only else "") + ("" if Path(args.index).name == "index" else "_" + Path(args.index).name)
+    (ROOT / f"data/eval/related_history{tag}.json").write_text(json.dumps(results, indent=1))
     for kind in ("issue", "mr"):
         rs = [r for r in results if r["kind"] == kind]
         if not rs:
