@@ -15,7 +15,7 @@ import getpass
 import hashlib
 import json
 import sys
-from collections import Counter
+from collections import Counter, defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -59,6 +59,7 @@ class Store:
         self.themes = self._json("data/trends/k250/themes.json")
         self.label_trends = self._json("data/trends/labels.json")
         self.area_eval = self._json("data/labels/area_eval.json")
+        self.module_eval = self._json("data/labels/module_eval.json")
         self.area_rows = []
         path = ROOT / "data/labels/area_suggestions.csv"
         if path.exists():
@@ -273,7 +274,34 @@ class Store:
             labels = {l for l, n in counts.items() if n >= A.MIN_ITEMS}
             self._suggester = (A, A.Suggester(self.index, issues, mrs, links,
                                               A.mr_dirs(ROOT / "data/index/commits.sqlite"), labels))
+            import module_labels as ML
+            self._modules = (ML, ML.Modules(), ML.mr_files(), None)
         return self._suggester
+
+    def module_groups(self, iid, as_mr, item, unmerged_paths=None):
+        """Proposed module group labels: from changed files, linked MRs' files, or named classes."""
+        ML, mod, files, common = self._modules
+        if common is None:
+            issues = [json.loads(p.read_text())["issue"] for p in (ROOT / "data/vtk-history/issues").glob("*.json")]
+            df = Counter(c for i in issues for c in set(ML.CLASS.findall(f"{i['title']}\n{i.get('description') or ''}")))
+            common = {c for c, n in df.items() if n > ML.BOILERPLATE * len(issues)}
+            self._modules = (ML, mod, files, common)
+        if as_mr:
+            rows, source = mod.from_paths(files.get(iid) or unmerged_paths or []), "files it changes"
+        else:
+            _A, s = self._suggester
+            linked = [p for m in s.links.get(iid, ()) for p in files.get(m, [])]
+            if linked:
+                rows, source = mod.from_paths(linked), "files changed by linked MRs"
+            else:
+                text = f"{item['title']}\n{ML.COMMENT.sub('', item.get('description') or '')}"
+                rows, source = mod.from_classes(set(ML.CLASS.findall(text)) - common), "VTK classes it names"
+        totals = ML.by_label(rows)
+        modules = defaultdict(list)
+        for label, module, n in rows:
+            modules[label].append(f"{module} ({n})")
+        return {"source": source, "groups": [{"label": l, "new": l in ML.NEW_LABELS, "count": n,
+                                              "modules": ", ".join(modules[l][:3])} for l, n in totals.most_common(4)]}
 
     def suggest_labels(self, ref):
         """Area label suggestion for '#123' or '123' (an issue, or an MR when no such issue) or '!123' (an MR)."""
@@ -291,11 +319,13 @@ class Store:
         iid = int(number)
         if as_mr:
             item = json.loads(path.read_text())["merge_request"]
-            changed = None
+            changed, unmerged = None, None
             if iid not in s.dirs and item.get("sha"):
-                changed = A.top_dirs(self.mr_paths(item["sha"]))
+                unmerged = self.mr_paths(item["sha"])
+                changed = A.top_dirs(unmerged)
             ev, fields, linked = s.mr_evidence(iid, changed=changed), set(), []
         else:
+            unmerged = None
             item = json.loads(path.read_text())["issue"]
             text = f"Issue #{iid}: {item['title']}\n\n{item.get('description') or ''}"
             fields = A.field_labels(item.get("description"))
@@ -303,7 +333,8 @@ class Store:
         top, conf, ranked = A.Suggester.combine(ev, ("text", "files", "mr", "field"))
         cut = (self.area_eval or {}).get("cutoff", 0.6)
         total = sum(v for _, v in ranked) or 1
-        return {"ref": f"{'!' if as_mr else '#'}{iid}", "kind": "merge request" if as_mr else "issue",
+        return {"modules": self.module_groups(iid, as_mr, item, unmerged),
+                "ref": f"{'!' if as_mr else '#'}{iid}", "kind": "merge request" if as_mr else "issue",
                 "title": item["title"], "url": item["web_url"], "state": item["state"],
                 "labels": item.get("labels") or [], "cutoff": cut, "confidence": round(conf, 2),
                 "suggested": (top if conf >= cut else A.NO_FIT) if top else "no evidence",

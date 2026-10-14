@@ -40,6 +40,7 @@ step "search index"
 python3 -u index/build_index.py
 step "area label suggestions"
 python3 -u triage/area_labels.py
+python3 -u triage/module_labels.py
 step "themes"
 python3 -u trends/discover_themes.py --k 250 --out data/trends/k250
 step "done"

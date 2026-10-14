@@ -18,6 +18,7 @@ This work is part of an NIH-funded effort on VTK maintenance.
 | Deprecations | Every API VTK deprecated: when, why, in which MR, and whether it was removed | |
 | Area label suggestions | Suggests an `area:` label for issues that have none, from the most similar labeled issues and MRs, the files changed by MRs that link the issue, and the issue template's Language and Graphics backend lines. Labels that name a technology (`area:wasm`, `area:webgpu`, `area:qt`, ...) need the issue to name it. Below a confidence cutoff (0.7) the issue is marked "no label fits" | Above the cutoff, right for 95% of 315 labeled issues tested one at a time, and 91% of 54 issues filed since 2024 using only labels from before; always suggesting `area:build` is right for 42% |
 | GitLab labels | Search filtered by label, labels shown on search results and in the briefing | |
+| Module group labels | Proposes one label per top-level VTK directory (`area:common`, `area:filters`, ... reusing `area:rendering`, `area:io` and the other existing labels), read from the files an MR changes; for an issue, from its linked MRs or the VTK classes it names | 10,314 of 13,759 MRs and 3,313 of 5,193 issues would get one; on 598 issues with both, the named classes agreed with the linked MRs' files 73% of the time |
 | Trends | Terms, code areas, themes and GitLab `area:` and `lang:` labels whose share of MRs, issues or forum topics rose or fell | |
 | Search | Keyword and meaning search over MRs, issues, review threads, forum posts, blog posts, docs and release notes | |
 | Commit index | 79,907 commits on master since 1994, with the functions each changed and, for 25,667 of them, the MR that merged it | |
@@ -98,6 +99,7 @@ Tabs: Briefing, Review, Rules, Deprecations, Trends, Labels, Search. Labels show
 | Reviewer agreement | `python eval/reviewer_agreement.py` |
 | Review agent | `python bench/build_benchmark.py`, then `python agent/evaluate.py --agent tool` and `python agent/judge_comments.py score <run directories>` |
 | Area label suggestions | `python triage/area_labels.py` (report in `data/labels/AREA_LABELS.md`); `--mrs` for labeled merge requests |
+| Module group labels | `python triage/module_labels.py` (report in `data/labels/MODULE_LABELS.md`) |
 | Writing fixes | `python eval/fix_suggestions.py build --n 150`, `run --model <model> [--history \| --code-history]`, `score <labels>`, then `python eval/fix_stats.py` |
 
 Runs that call OpenAI log their token use to `data/logs/openai_usage.jsonl` and stop when the logged cost reaches `OPENAI_BUDGET_USD` (default $2).
@@ -113,7 +115,7 @@ Runs that call OpenAI log their token use to `data/logs/openai_usage.jsonl` and 
 | `deprecations/` | Deprecation index |
 | `trends/` | Term and theme trends |
 | `index/` | Search index, commit index, and GitLab labels |
-| `triage/` | Area label suggestions for issues |
+| `triage/` | Area label suggestions and proposed module group labels |
 | `ontology/` | VTK modules and classes, from the source tree |
 | `app/` | The trame app, including the MR briefing |
 | `eval/` | Evaluations of the tools |

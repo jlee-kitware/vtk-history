@@ -1235,7 +1235,26 @@ def label_summary():
                  f"stay unlabeled as “{NO_FIT}”.",
         "by_label": b["by_label"], "accuracy": accuracy, "dirs": dirs,
         "cutoff": ev["cutoff"], "target": f"{ev['target']:.0%}", "split": ev["time_split"]["split"][:4],
+        **module_summary(),
     }
+
+
+def module_summary():
+    me = store.module_eval
+    if not me:
+        return {"groups": [], "groups_caption": ""}
+    mc = {r["label"]: r for r in me["mrs"]["by_label"]}
+    ic = {r["label"]: r for r in me["issues"]["by_label"]}
+    groups = [{"label": l, "mrs": mc.get(l, {}).get("count", 0), "issues": ic.get(l, {}).get("count", 0),
+               "new": (mc.get(l) or ic.get(l))["new"]} for l in sorted(set(mc) | set(ic), key=lambda l: -(
+               mc.get(l, {}).get("count", 0) + ic.get(l, {}).get("count", 0)))]
+    cv = me["class_vs_mr"]
+    caption = (f"One label per top-level VTK directory, reusing existing labels where they match, read from the "
+               f"files a merge request changes. {me['mrs']['with_group_label']:,} of {me['mrs']['total']:,} merge "
+               f"requests and {me['issues']['with_group_label']:,} of {me['issues']['total']:,} issues would get one. "
+               f"For issues without a linked merge request, the VTK classes they name decide; on {cv['issues']} issues "
+               f"that have both, the classes agreed with the merge request's files {cv['share']:.0%} of the time.")
+    return {"groups": groups, "groups_caption": caption}
 
 
 state.update({"lb_state": "opened", "lb_label": "", "lb_min": "", "lb_search": "", "lb_rows": [], "lb_shown": "",
@@ -1333,6 +1352,23 @@ def labels_view():
                                     mui.TableCell([B("a.conf"), B("a.cutoff ? ' (cutoff)' : ''")])
                                     mui.TableCell([B("a.backfill")])
                                     mui.TableCell([B("a.new")])
+                for _ in section("Proposed module group labels", "lb_summary.groups",
+                                 "lb_summary.groups_caption"):
+                    with html.Div(style={"maxHeight": "260px", "overflowY": "auto"}):
+                        with mui.Table(size="small"):
+                            head(("Label", None), ("MRs", 70, "Merge requests whose changed files fall mostly in this "
+                                                              "group"),
+                                 ("Issues", 70, "Issues whose linked MRs changed it most, or whose named VTK classes "
+                                                "belong to it"), ("", 120))
+                            with mui.TableBody():
+                                with react.For(items="lb_summary.groups", name="g"):
+                                    with mui.TableRow(key=B("g.label")):
+                                        mui.TableCell([B("g.label")], style={"fontFamily": MONO})
+                                        mui.TableCell([B("g.mrs")])
+                                        mui.TableCell([B("g.issues")])
+                                        with mui.TableCell():
+                                            with react.If(value="g.new"):
+                                                pill("'proposed new label'", "#8A5A00", "#FFF3D6")
                 for _ in section("Code areas without a label", "lb_summary.dirs",
                                  "'Merge requests that changed each top-level directory, and the share carrying any "
                                  "area label. Issues in the low-share areas often end up as “no label fits”.'"):
@@ -1365,6 +1401,16 @@ def labels_view():
             with react.If(value="lb_lookup.dirs.length"):
                 html.Div([B("'Changes: ' + lb_lookup.dirs.join(', ')")], style=SMALL)
             html.Div([B("'Labels on GitLab now: ' + (lb_lookup.labels.join(', ') || 'none')")], style=SMALL)
+            with react.If(value="lb_lookup.modules.groups.length"):
+                html.Div([B("'Module group labels, from the ' + lb_lookup.modules.source + ':'")],
+                         style={"marginTop": "8px", "fontWeight": 600})
+                with react.For(items="lb_lookup.modules.groups", name="g"):
+                    with html.Div(key=B("g.label"), style={"display": "flex", "gap": "6px", "alignItems": "baseline",
+                                                           "marginTop": "2px"}):
+                        pill("g.label", ACCENT, ACCENT_TINT)
+                        with react.If(value="g.new"):
+                            pill("'proposed new label'", "#8A5A00", "#FFF3D6")
+                        html.Span([B("g.modules")], style=SMALL)
     with bar():
         select("State", "lb_state", "lb_states", 110, tip="Open or closed issues; empty shows both")
         select("Suggested label", "lb_label", "lb_labels", 200,
