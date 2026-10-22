@@ -5,7 +5,7 @@ Combines two rankings by reciprocal rank fusion:
   keyword    SQLite FTS5 BM25 over title, text, file path, and class (exact identifiers)
   meaning    cosine similarity of qwen3-embedding vectors (paraphrases)
 
-Filters: kind (thread, mr, issue, post, blog, doc, note, class), date range, module, class, path prefix, author,
+Filters: kind (thread, mr, issue, post, blog, doc, note, class, wiki), date range, module, class, path prefix, author,
 and GitLab label (index/labels.py; threads and notes carry their MR's labels).
 With no kind given, search_mixed adds the best few of each kind missing from the overall top results, so a
 small source (blog posts, docs) is not crowded out by a large one (review threads).
@@ -179,7 +179,7 @@ def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("query")
     p.add_argument("-k", type=int, default=10)
-    p.add_argument("--kind", choices=["thread", "mr", "issue", "post", "blog", "doc", "note", "class"])
+    p.add_argument("--kind", choices=["thread", "mr", "issue", "post", "blog", "doc", "note", "class", "wiki"])
     p.add_argument("--since")
     p.add_argument("--until")
     p.add_argument("--module")

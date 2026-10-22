@@ -356,7 +356,8 @@ class Store:
                 url = f"{GITLAB}/issues/{ref[1:]}"
             else:
                 url = h["url"]
-            label = ("blog post" if h["kind"] == "blog" else ref.rsplit("/", 1)[-1] if "/" in ref else ref)
+            label = ("blog post" if h["kind"] == "blog" else "wiki page" if h["kind"] == "wiki"
+                     else ref.rsplit("/", 1)[-1] if "/" in ref else ref)
             rows.append({"kind": h["kind"], "ref": ref, "label": label, "date": h["date"], "author": h["author"] or "",
                          "title": h["title"] or "", "path": h["path"] or "", "url": url,
                          "snippet": " ".join((h["text"] or "").split())[:400],

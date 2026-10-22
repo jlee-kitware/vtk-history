@@ -13,6 +13,7 @@ meaning-based search. Units:
   note     one release note as its author wrote it, linked to the MR that added it
   class    the Doxygen description of one VTK class
   blog     one section of a Kitware blog post that mentions VTK (mirror/blog_mirror.py)
+  wiki     one section of a page from the retired VTK wiki (mirror/wiki_import.py)
 
 Embeddings come from qwen3-embedding, truncated to --dim dimensions (the model is trained
 so that leading dimensions stand alone) and stored as float16. The embedding cache is
@@ -87,6 +88,29 @@ def blog_units(blog):
             yield {"id": f"blog:{b['id']}/{n}", "kind": "blog", "ref": "blog", "url": b["link"],
                    "date": b["date"][:10], "author": "Kitware blog", "path": None, "module": None, "class": None,
                    "title": title + (f": {head}" if head else ""), "text": full, "embed_text": full[:EMBED_CHARS]}
+
+
+def wiki_units(wiki):
+    """Sections of the imported VTK wiki pages, merged up to BLOG_CHARS."""
+    for f in sorted(glob.glob(f"{wiki}/pages/*.json")):
+        page = json.load(open(f))
+        chunks, heading, text = [], "", ""
+        for head, body in page["sections"]:
+            if text and len(text) + len(body) > BLOG_CHARS:
+                chunks.append((heading, text))
+                heading, text = head, ""
+            heading = heading or head
+            text = f"{text}\n\n{head}\n{body}".strip() if head else f"{text}\n\n{body}".strip()
+        if text:
+            chunks.append((heading, text))
+        for n, (head, text) in enumerate(chunks):
+            if len(text) < 80:
+                continue
+            title = page["title"] + (f": {head}" if head else "")
+            full = f"{title}\n\n{text}"
+            yield {"id": f"wiki:{page['id']}/{n}", "kind": "wiki", "ref": "wiki", "url": page["url"],
+                   "date": page["updated"][:10], "author": "VTK wiki", "path": None, "module": None,
+                   "class": None, "title": title, "text": full, "embed_text": full[:EMBED_CHARS]}
 
 
 def post(path, payload, timeout=600):
@@ -243,6 +267,7 @@ def main():
     p.add_argument("--mirror", default="data/vtk-history")
     p.add_argument("--discourse", default="data/discourse-history")
     p.add_argument("--blog", default="data/blog-history")
+    p.add_argument("--wiki", default="data/wiki-history")
     p.add_argument("--embed-model", default="qwen3-embedding:latest")
     p.add_argument("--dim", type=int, default=1024)
     p.add_argument("--theme-cache", default="data/trends/doc_embeddings.npy")
@@ -256,6 +281,7 @@ def main():
     out.mkdir(parents=True, exist_ok=True)
     rows = list(threads(args.examples)) + list(issues(args.mirror)) + list(posts(args.discourse)) + list(mrs(args.mirror))
     rows += list(blog_units(args.blog))
+    rows += list(wiki_units(args.wiki))
     if not args.no_docs:
         mr_by_sha = merge_commits(args.mirror)
         ref = next(r for r in ("upstream/master", "origin/master", "master")
@@ -267,7 +293,8 @@ def main():
         for r in rows:
             if r["kind"] == "note" and r.get("mr"):
                 r["url"] = f"https://gitlab.kitware.com/vtk/vtk/-/merge_requests/{r['mr']}"
-    counts = {k: sum(1 for r in rows if r["kind"] == k) for k in ("thread", "issue", "post", "mr", "doc", "note", "class", "blog")}
+    counts = {k: sum(1 for r in rows if r["kind"] == k)
+              for k in ("thread", "issue", "post", "mr", "doc", "note", "class", "blog", "wiki")}
     print(f"{len(rows)} units: {counts}", flush=True)
     write_rows(rows, out / "docs.sqlite")
     print(f"wrote {out / 'docs.sqlite'}; {labels.apply(out / 'docs.sqlite', args.mirror)} rows with GitLab labels",

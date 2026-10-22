@@ -12,7 +12,8 @@ Views:
   Trends        emerging, past, and fading terms, code areas, themes, and GitLab labels, with per-quarter charts
   Labels        area label suggestions for unlabeled issues: what a backfill would add, how accurate the
                 suggestions were on issues maintainers already labeled, and a lookup for one issue
-  Search        review threads, MRs, issues, forum posts, docs, release notes, and class docs, filterable by
+  Search        review threads, MRs, issues, forum posts, docs, release notes, class docs, and the retired
+                VTK wiki, filterable by
                 GitLab label
 
 Usage:
@@ -122,7 +123,7 @@ state.update({
     "trend_rows": [], "trend_name": None, "trend_row": None, "trend_chart": "", "trend_title": "",
     "q": "", "q_kind": "", "q_since": "", "q_until": "", "q_label": "", "search_rows": [], "searching": False,
     "search_error": "", "label_options": store.label_options(),
-    "kinds": options(["thread", "mr", "issue", "post", "blog", "doc", "note", "class"]),
+    "kinds": options(["thread", "mr", "issue", "post", "blog", "doc", "note", "class", "wiki"]),
     "topic": None, "topic_error": "", "search_more": [],
 })
 
@@ -635,7 +636,8 @@ def search_results():
         field("Ask about VTK history: an API, a design question, a bug", "q", on_enter=search_key,
               tip="Matches by keyword and by meaning; press Enter to search")
         select("Kind", "q_kind", "kinds", 120,
-               tip="Limit to one kind: review thread, merge request, issue, forum post, blog, doc, note or class")
+               tip="Limit to one kind: review thread, merge request, issue, forum post, blog, doc, note, class, "
+                   "or a page of the retired VTK wiki")
         select("GitLab label", "q_label", "label_options", 220,
                tip="Only issues and merge requests carrying this label, and review threads and release notes of "
                    "such merge requests. The number is how many issues and MRs carry it")
@@ -673,7 +675,8 @@ def result_table(items):
     with mui.TableContainer(style={"border": f"1px solid {LINE}", "borderRadius": "8px", "background": SURFACE,
                                    "overflowX": "hidden"}):
         with mui.Table(size="small", style={"tableLayout": "fixed", "width": "100%"}):
-            head(("Kind", 70, "thread: a review discussion; mr: merge request; post: forum topic"),
+            head(("Kind", 70, "thread: a review discussion; mr: merge request; post: forum topic; wiki: a page of "
+                              "the retired VTK wiki, linked through the Internet Archive"),
                  ("Ref", 110, "Opens the item on GitLab, Discourse or the web"), ("Date", 100), ("Author", 130),
                  ("Title and excerpt", None, "The part of the item that best matches the search"))
             with mui.TableBody():

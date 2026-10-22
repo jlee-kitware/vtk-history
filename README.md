@@ -20,7 +20,7 @@ This work is part of an NIH-funded effort on VTK maintenance.
 | GitLab labels | Search filtered by label, labels shown on search results and in the briefing | |
 | Module group labels | Proposes one label per top-level VTK directory (`area:common`, `area:filters`, ... reusing `area:rendering`, `area:io` and the other existing labels), read from the files an MR changes; for an issue, from its linked MRs or the VTK classes it names | 10,314 of 13,759 MRs and 3,313 of 5,193 issues would get one; on 598 issues with both, the named classes agreed with the linked MRs' files 73% of the time |
 | Trends | Terms, code areas, themes and GitLab `area:` and `lang:` labels whose share of MRs, issues or forum topics rose or fell | |
-| Search | Keyword and meaning search over MRs, issues, review threads, forum posts, blog posts, docs and release notes | |
+| Search | Keyword and meaning search over MRs, issues, review threads, forum posts, blog posts, docs, release notes and the retired VTK wiki | |
 | Commit index | 79,907 commits on master since 1994, with the functions each changed and, for 25,667 of them, the MR that merged it | |
 
 The app (`app/`) presents all of these in a browser.
@@ -67,6 +67,7 @@ The steps run in this order. `refresh.sh` runs all of them after the first sync 
    python mirror/gitlab_mirror.py sync --repo $VTK_REPO    # MRs, issues and all review threads
    python mirror/discourse_mirror.py sync                  # discourse.vtk.org topics
    python mirror/blog_mirror.py sync                       # Kitware blog posts about VTK
+   python mirror/wiki_import.py wiki_dump.xml              # VTK pages of the retired vtk.org wiki
    ```
    GitLab does not serve discussions anonymously. Use a `read_api` token from a gitlab.kitware.com account with no project or group memberships, so only public content can enter the mirror; the script refuses a token whose account is a project member. The first GitLab sync is about 20,000 requests at one per second (5 to 6 hours); tell the GitLab administrators beforehand. Later syncs fetch only what changed. The mirror is its own git repository in `data/vtk-history/`.
 2. **Extract review examples.** `python extract/extract_reviews.py` recovers the code each line comment was written on and records whether the author changed it before the MR merged.
@@ -123,7 +124,7 @@ Runs that call OpenAI log their token use to `data/logs/openai_usage.jsonl` and 
 
 ## Data sources and terms
 
-All sources are public. GitLab content comes from gitlab.kitware.com/vtk/vtk. Discourse posts from discourse.vtk.org are licensed CC BY-NC-SA 3.0, which each mirrored topic records. Kitware blog posts come from the site's public API. The mirrored text keeps its original terms; the license below covers this project's code.
+All sources are public. GitLab content comes from gitlab.kitware.com/vtk/vtk. Discourse posts from discourse.vtk.org are licensed CC BY-NC-SA 3.0, which each mirrored topic records. Kitware blog posts come from the site's public API. The VTK wiki (vtk.org/Wiki, the KitwarePublic MediaWiki, no longer served) comes from a MediaWiki XML export; only the VTK pages and the pages the history links to are kept, and search results link to their Internet Archive copies. The mirrored text keeps its original terms; the license below covers this project's code.
 
 ## License
 
