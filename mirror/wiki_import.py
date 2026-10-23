@@ -2,10 +2,10 @@
 """Import the VTK pages of the retired KitwarePublic wiki (vtk.org/Wiki) from a MediaWiki XML export.
 
 The wiki was shared by VTK, ParaView, ITK, CMake and other Kitware projects and is no longer
-served. Kept: main-namespace pages, not redirects, whose title starts with "VTK", plus any page
+served; its content is under a Creative Commons license. Kept: main-namespace pages, not redirects, whose title starts with "VTK", plus any page
 that VTK's GitLab, Discourse or blog history links to (vtk.org/Wiki/<title>). Each page is stored
 with its current text (wikitext, plain text, and plain text by section), first and last edit dates, revision count, and
-editors, in data/wiki-history/pages/<id>.json. The export itself stays outside the repository.
+editors, in data/wiki-history/pages/<id>.json; redirects go to data/wiki-history/redirects.json. The export itself stays outside the repository.
 
 Usage:
   python mirror/wiki_import.py /path/to/wiki_dump.xml
@@ -76,10 +76,13 @@ def main():
     out = Path(args.out) / "pages"
     out.mkdir(parents=True, exist_ok=True)
     kept = linked = 0
+    redirects = {}
     for _, el in ET.iterparse(args.dump, events=("end",)):
         if el.tag != NS + "page":
             continue
         title = el.findtext(NS + "title")
+        if el.findtext(NS + "ns") == "0" and el.find(NS + "redirect") is not None:
+            redirects[norm(title)] = norm(el.find(NS + "redirect").get("title"))
         if el.findtext(NS + "ns") == "0" and el.find(NS + "redirect") is None:
             is_vtk = re.match(r"VTK\b", title, re.I) is not None
             if is_vtk or norm(title) in wanted:
@@ -95,8 +98,10 @@ def main():
                 kept += 1
                 linked += page["linked_from_history"]
         el.clear()
+    (Path(args.out) / "redirects.json").write_text(json.dumps(redirects, indent=0, sort_keys=True))
     (Path(args.out) / "import.json").write_text(json.dumps(
-        {"source": "KitwarePublic MediaWiki XML export", "pages": kept, "linked_from_history": linked,
+        {"source": "KitwarePublic MediaWiki XML export", "license": "Creative Commons (variant to confirm)",
+         "pages": kept, "linked_from_history": linked,
          "titles_linked_from_history": len(wanted)}, indent=1))
     print(f"kept {kept} pages ({linked} linked from the history; {len(wanted)} distinct titles linked)")
 

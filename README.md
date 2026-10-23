@@ -124,7 +124,7 @@ Runs that call OpenAI log their token use to `data/logs/openai_usage.jsonl` and 
 
 ## Data sources and terms
 
-All sources are public. GitLab content comes from gitlab.kitware.com/vtk/vtk. Discourse posts from discourse.vtk.org are licensed CC BY-NC-SA 3.0, which each mirrored topic records. Kitware blog posts come from the site's public API. The VTK wiki (vtk.org/Wiki, the KitwarePublic MediaWiki, no longer served) comes from a MediaWiki XML export; only the VTK pages and the pages the history links to are kept, and search results link to their Internet Archive copies. The mirrored text keeps its original terms; the license below covers this project's code.
+All sources are public. GitLab content comes from gitlab.kitware.com/vtk/vtk. Discourse posts from discourse.vtk.org are licensed CC BY-NC-SA 3.0, which each mirrored topic records. Kitware blog posts come from the site's public API. The VTK wiki (vtk.org/Wiki, the KitwarePublic MediaWiki, no longer served) comes from a MediaWiki XML export; only the VTK pages and the pages the history links to are kept, and search results link to their Internet Archive copies. Its content is under a Creative Commons license. The mirrored text keeps its original terms; the license below covers this project's code.
 
 ## License
 

@@ -2,7 +2,8 @@
 
 Sections, each with how well it held up when measured on past merge requests (eval/):
   reviewers    who reviewed and wrote these files recently (people/expertise.py)
-  related      earlier issues, merge requests, and forum threads matching the title and description
+  related      earlier issues, merge requests, forum threads, and pages of the retired VTK wiki matching the
+               title and description
   conventions  rules reviewers applied before on these files, with their follow-through estimate
   deprecated   deprecated or removed APIs used in the added lines
   file history recent commits on the most-changed files
@@ -30,7 +31,8 @@ URL = re.compile(r"https?://\S+")
 MEASURED = {
     "reviewers": "On past MRs, an actual reviewer was in this top 3 for 76% of 1,656 MRs (67% for the three most active reviewers).",
     "related": "On 300 past MRs that link an issue, this search found it in the top 5 for 84% (73% from the title "
-               "alone) among about 3,700 issues; for a linked earlier MR, 51% among about 9,900.",
+               "alone) among about 3,700 issues; for a linked earlier MR, 51% among about 9,900. Wiki pages "
+               "come from the retired VTK wiki and were not part of that test.",
     "conventions": "Reference: what reviewers asked for on these files before. Which one a reviewer raises next "
                    "could not be predicted from history (at most 20% in the top 10), so read these as a checklist.",
     "deprecated": "Checked against VTK's deprecation records, confirmed in the headers at this revision.",
@@ -106,14 +108,17 @@ class Briefing:
 
     def related_section(self, query, until, self_ref, linked):
         out = []
-        for kind, label, k in (("issue", "Issue", 5), ("mr", "Merge request", 5), ("post", "Forum", 3)):
+        for kind, label, k in (("issue", "Issue", 5), ("mr", "Merge request", 5), ("post", "Forum", 3),
+                               ("wiki", "Wiki", 3)):
             seen = set()
             for h in self.index.search(query, k=k * 3, kind=kind, **({"until": until} if until else {})):
-                ref = h["ref"]
+                ref, title = h["ref"], h.get("title") or ""
+                if kind == "wiki":
+                    ref, _, title = title.partition(": ")
                 if ref == self_ref or ref in seen:
                     continue
                 seen.add(ref)
-                out.append({"key": f"{kind}{ref}", "kind": label, "ref": ref, "title": h.get("title") or "",
+                out.append({"key": f"{kind}{ref}", "kind": label, "ref": ref, "title": title,
                             "date": h["date"], "url": h.get("url") or "", "linked": ref in linked,
                             "topic": h.get("topic") or "",
                             "labels": [l for l in (h.get("labels") or "").strip(",").split(",") if l]})
