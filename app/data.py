@@ -28,11 +28,19 @@ from check_rules import conflicts, load_index  # noqa: E402
 GITLAB = "https://gitlab.kitware.com/vtk/vtk/-"
 DISCOURSE = "https://discourse.vtk.org/t"
 CURATED = ROOT / "rules" / "curated.json"
+LABEL_DECISIONS = ROOT / "data/labels/label_decisions.json"
 DECISIONS = ("accepted", "edited", "rejected")
 
 
 def mr_url(iid):
     return f"{GITLAB}/merge_requests/{iid}" if iid else None
+
+
+def reviewer():
+    """Who records a decision: the git identity of the checkout, or the login name."""
+    import subprocess
+    name = subprocess.run(["git", "-C", str(ROOT), "config", "user.name"], capture_output=True, text=True).stdout.strip()
+    return name or getpass.getuser()
 
 
 def also_text(rule):
@@ -53,6 +61,7 @@ class Store:
         self.by_symbol = load_index(ROOT / "data/deprecations/index.jsonl")
         self.deprecations = [r for recs in self.by_symbol.values() for r in recs]
         self.curated = json.loads(CURATED.read_text()) if CURATED.exists() else {}
+        self.label_decisions = json.loads(LABEL_DECISIONS.read_text()) if LABEL_DECISIONS.exists() else {}
         for i, r in enumerate(self.rules, 1):
             r.setdefault("id", f"R{i:03d}")
             r["key"] = rule_key(r)
@@ -223,11 +232,68 @@ class Store:
                 "decision": "edited" if decision == "accepted" and edited else decision,
                 "rule": rule_text.strip() if edited else None, "draft": r["rule"], "note": note.strip(),
                 "topic": r["topic"], "scope": r.get("scope"), "support_mrs": r["support_mrs"],
-                "by": who or getpass.getuser(), "at": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
+                "by": who or reviewer(), "at": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
             }
         CURATED.parent.mkdir(exist_ok=True)
         CURATED.write_text(json.dumps(self.curated, indent=1, ensure_ascii=False, sort_keys=True) + "\n")
         return self.curated.get(key, {}).get("decision", "undecided")
+
+    def label_accept_all(self, rows, who=None):
+        """Accept every suggestion in rows without reviewing each; marked bulk, so the accuracy leaves them out."""
+        at, who = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"), who or reviewer()
+        n = 0
+        for r in rows:
+            key = str(r["issue"])
+            if key in self.label_decisions or r["suggested"] == "no label fits":
+                continue
+            self.label_decisions[key] = {"verdict": "right", "label": r["suggested"], "suggested": r["suggested"],
+                                         "confidence": r["confidence"], "bulk": True, "by": who, "at": at}
+            n += 1
+        LABEL_DECISIONS.parent.mkdir(parents=True, exist_ok=True)
+        LABEL_DECISIONS.write_text(json.dumps(self.label_decisions, indent=1, sort_keys=True) + "\n")
+        return n
+
+    def label_clear_bulk(self):
+        self.label_decisions = {k: d for k, d in self.label_decisions.items() if not d.get("bulk")}
+        LABEL_DECISIONS.write_text(json.dumps(self.label_decisions, indent=1, sort_keys=True) + "\n")
+
+    def label_decide(self, issue, verdict, label, suggested, confidence, who=None):
+        """Record a reviewer's verdict on an issue's suggested area label.
+
+        right: the suggestion is correct; relabel: a different label is correct; wrong: the suggestion is wrong
+        and no correction was given; no_fit: no area label fits. undecided removes the verdict."""
+        key = str(int(issue))
+        if verdict == "right" and suggested == "no label fits":
+            verdict = "no_fit"
+        if verdict == "undecided":
+            self.label_decisions.pop(key, None)
+        else:
+            final = {"right": suggested, "relabel": label}.get(verdict)
+            self.label_decisions[key] = {
+                "verdict": verdict, "label": final, "suggested": suggested,
+                "confidence": float(confidence) if confidence not in (None, "") else None,
+                "by": who or reviewer(), "at": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
+            }
+        LABEL_DECISIONS.parent.mkdir(parents=True, exist_ok=True)
+        LABEL_DECISIONS.write_text(json.dumps(self.label_decisions, indent=1, sort_keys=True) + "\n")
+
+    def label_review(self, cutoff):
+        """How the reviewed suggestions held up, and what applying the accepted ones would change."""
+        sys.path.insert(0, str(ROOT / "triage"))
+        import apply_labels as AL
+        bulk = sum(bool(d.get("bulk")) for d in self.label_decisions.values())
+        ds = [d for d in self.label_decisions.values() if not d.get("bulk")]
+        proposed = [d for d in ds if d["suggested"] and d["suggested"] != "no label fits"]
+        above = [d for d in proposed if (d["confidence"] or 0) >= cutoff]
+        right = lambda xs: sum(d["verdict"] == "right" for d in xs)
+        rows, skipped = AL.plan(self.label_decisions)
+        return {"reviewed": len(ds), "bulk": bulk, "proposed": len(proposed), "right": right(proposed),
+                "relabel": sum(d["verdict"] == "relabel" for d in proposed),
+                "wrong": sum(d["verdict"] == "wrong" for d in proposed),
+                "no_fit": sum(d["verdict"] == "no_fit" for d in ds),
+                "above": len(above), "above_right": right(above),
+                "plan": rows, "skipped": skipped, "applied": len(AL.applied_issues()), "marker": AL.MARKER,
+                "blocker": AL.write_blocker()}
 
     @staticmethod
     def deprecation_row(d):

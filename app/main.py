@@ -1275,10 +1275,79 @@ state.update({"lb_state": "opened", "lb_label": "", "lb_min": "", "lb_search": "
               "lb_summary": label_summary(), "lb_states": [{"title": "Open", "value": "opened"},
                                                           {"title": "Closed", "value": "closed"}],
               "lb_labels": options([NO_FIT] + sorted({r["suggested"] for r in store.area_rows} - {NO_FIT})),
-              "lb_iid": "", "lb_lookup": None, "lb_busy": False, "lb_error": ""})
+              "lb_iid": "", "lb_lookup": None, "lb_busy": False, "lb_error": "", "lb_review": "",
+              "lb_reviews": [{"title": "Not reviewed", "value": "none"}, {"title": "Reviewed", "value": "any"},
+                             {"title": "Marked right", "value": "right"}, {"title": "Corrected", "value": "relabel"},
+                             {"title": "Marked wrong", "value": "wrong"}, {"title": "No label fits", "value": "no_fit"}],
+              "lb_fix": "", "lb_fixes": options(sorted({r["suggested"] for r in store.area_rows} - {NO_FIT})),
+              "lb_decisions": {}, "lb_rv": {}, "lb_bulk_n": 0})
+
+VERDICT_TEXT = {"right": "right", "relabel": "corrected", "wrong": "wrong", "no_fit": "no label fits"}
 
 
-@state.change("lb_state", "lb_label", "lb_min", "lb_search")
+def refresh_label_review():
+    state.lb_decisions = {k: {"verdict": d["verdict"], "text": "accepted in bulk" if d.get("bulk") else
+                              VERDICT_TEXT[d["verdict"]] + (f": {d['label']}" if d["verdict"] == "relabel" else "")}
+                          for k, d in store.label_decisions.items()}
+    rv = store.label_review((store.area_eval or {}).get("cutoff", 0.7))
+    pct = lambda a, b: f"{a / b:.0%}" if b else "none yet"
+    state.lb_rv = {
+        "reviewed": rv["reviewed"],
+        "summary": (f"{rv['reviewed']} suggestions reviewed. Of the {rv['proposed']} that proposed a label, "
+                    f"{rv['right']} were right ({pct(rv['right'], rv['proposed'])}), {rv['relabel']} corrected "
+                    f"and {rv['wrong']} wrong; {rv['no_fit']} marked “{NO_FIT}”."
+                    + (f" {rv['bulk']} more accepted in bulk, without review, are left out of these numbers."
+                       if rv["bulk"] else "")),
+        "bulk": rv["bulk"],
+        "cutoff": (f"At or above the cutoff: {rv['right']} of {rv['above']} right is pending" if not rv["above"]
+                   else f"At or above the cutoff: {rv['above_right']} of {rv['above']} right "
+                        f"({pct(rv['above_right'], rv['above'])}), against "
+                        f"{label_summary().get('target', '90%')} or better measured on labeled issues."),
+        "ready": (f"Ready to apply: {len(rv['plan'])} issues would get their area label plus {rv['marker']}, "
+                  f"so later corrections can be counted. {rv['applied']} applied so far."),
+        "plan": [{"key": r["issue"], "issue": f"#{r['issue']}", "url": f"https://gitlab.kitware.com/vtk/vtk/-/issues/"
+                  f"{r['issue']}", "add": " + ".join(r["add"]), "title": r["title"]} for r in rv["plan"][:50]],
+        "skipped": len(rv["skipped"]),
+        "how": ("Applying is a separate, deliberate step: VTK_LABEL_WRITE=1 python triage/apply_labels.py apply, "
+                "for all accepted issues, or add --issue N for one. "
+                + (f"Not possible yet: {rv['blocker']}." if rv["blocker"] else "Writing is enabled.")),
+    }
+
+
+SHOWN = {"rows": []}
+
+
+def accept_all_shown():
+    cut = (store.area_eval or {}).get("cutoff", 0.7)
+    store.label_accept_all([r for r in SHOWN["rows"] if r["confidence"] >= cut])
+    refresh_label_review()
+    refresh_labels()
+
+
+def clear_bulk():
+    store.label_clear_bulk()
+    refresh_label_review()
+    refresh_labels()
+
+
+def label_decide(issue, verdict, label, suggested, confidence):
+    if not str(issue).lstrip("#").isdigit():
+        return
+    store.label_decide(int(str(issue).lstrip("#")), verdict, label, suggested, confidence)
+    refresh_label_review()
+    refresh_labels()
+
+
+def review_match(issue, review):
+    verdict = store.label_decisions.get(str(issue), {}).get("verdict")
+    if review == "none":
+        return verdict is None
+    if review == "any":
+        return verdict is not None
+    return not review or verdict == review
+
+
+@state.change("lb_state", "lb_label", "lb_min", "lb_search", "lb_review")
 def refresh_labels(**_):
     try:
         low = float(state.lb_min) if (state.lb_min or "").strip() else 0.0
@@ -1286,9 +1355,14 @@ def refresh_labels(**_):
         low = 0.0
     needle = (state.lb_search or "").lower().strip()
     rows = [r for r in store.area_rows
-            if (not state.lb_state or r["state"] == state.lb_state)
+            if review_match(r["issue"], state.lb_review)
+            and (not state.lb_state or r["state"] == state.lb_state)
             and (not state.lb_label or r["suggested"] == state.lb_label)
             and r["confidence"] >= low and (not needle or needle in r["title"].lower())]
+    cut = (store.area_eval or {}).get("cutoff", 0.7)
+    SHOWN["rows"] = rows
+    state.lb_bulk_n = sum(r["confidence"] >= cut and r["suggested"] != NO_FIT and str(r["issue"])
+                          not in store.label_decisions for r in rows)
     state.lb_rows = [dict(r, key=r["issue"], fits=r["suggested"] != NO_FIT,
                           expected=f"{r['expected_precision']:.0%}") for r in rows[:MAX_ROWS]]
     state.lb_shown = f"{len(rows):,} issues" + (f", the first {MAX_ROWS} shown" if len(rows) > MAX_ROWS else "")
@@ -1335,7 +1409,8 @@ def labels_view():
     caption("Suggested area labels for VTK issues that have none, from the most similar labeled issues and "
             "merge requests, the files changed by merge requests that link the issue, and the issue template's "
             "Language and Graphics backend lines. The lookup also takes a merge request, using the directories it "
-            "changes. Nothing is applied on GitLab from here.", marginBottom="10px")
+            "changes. Mark suggestions right or wrong to measure them on the real backlog; the accepted ones can "
+            "then be applied on GitLab as a separate step, which nothing here runs.", marginBottom="10px")
     with react.If(value="!lb_summary.now"):
         mui.Alert("Run python triage/area_labels.py to create the suggestions.", severity="info")
     with react.If(value="lb_summary.now"):
@@ -1383,6 +1458,19 @@ def labels_view():
                                         with mui.TableCell():
                                             with react.If(value="g.new"):
                                                 pill("'proposed new label'", "#8A5A00", "#FFF3D6")
+                for _ in section("Review and apply", "lb_rv.plan",
+                                 "'Your verdicts on the suggestions: the accuracy on the real backlog, and what "
+                                 "applying the accepted ones would change on GitLab.'"):
+                    for key in ("summary", "cutoff", "ready"):
+                        html.Div([B(f"lb_rv.{key}")], style={"margin": "4px 0", "fontSize": "0.88rem"})
+                    with react.If(value="lb_rv.plan.length"):
+                        with html.Div(style={"maxHeight": "160px", "overflowY": "auto", "margin": "4px 0"}):
+                            with react.For(items="lb_rv.plan", name="p"):
+                                with html.Div(key=B("p.key"), style={**SMALL, "display": "flex", "gap": "8px"}):
+                                    link("p.issue", "p.url")
+                                    html.Span([B("p.add")], style={"fontFamily": MONO})
+                                    html.Span([B("p.title")], style={"color": MUTED})
+                    html.Div([B("lb_rv.how")], style={**SMALL, "marginTop": "6px"})
                 for _ in section("Code areas without a label", "lb_summary.dirs",
                                  "'Merge requests that changed each top-level directory, and the share carrying any "
                                  "area label. Issues in the low-share areas often end up as “no label fits”.'"):
@@ -1415,6 +1503,29 @@ def labels_view():
             with react.If(value="lb_lookup.dirs.length"):
                 html.Div([B("'Changes: ' + lb_lookup.dirs.join(', ')")], style=SMALL)
             html.Div([B("'Labels on GitLab now: ' + (lb_lookup.labels.join(', ') || 'none')")], style=SMALL)
+            with react.If(value="lb_lookup.kind === 'issue'"):
+                lookup_ref = "lb_lookup.ref.slice(1)"
+                with html.Div(style={"display": "flex", "gap": "8px", "alignItems": "center", "marginTop": "8px",
+                                     "flexWrap": "wrap"}):
+                    html.Span("Your review:", style={"fontWeight": 600})
+                    with react.If(value=f"lb_decisions[{lookup_ref}]"):
+                        pill(f"lb_decisions[{lookup_ref}].text", ACCENT, ACCENT_TINT)
+                        mui.Button("Undo", size="small", on_click=C(
+                            label_decide, f"[{lookup_ref}, 'undecided', '', lb_lookup.suggested, lb_lookup.confidence]"))
+                    with react.If(value=f"!lb_decisions[{lookup_ref}]"):
+                        for text, verdict, tip in (
+                                ("Right", "right", "The suggested label is correct"),
+                                ("Wrong", "wrong", "The suggested label is not correct"),
+                                ("No label fits", "no_fit", "None of VTK's area labels fits this issue")):
+                            with tipped(tip):
+                                mui.Button(text, size="small", variant="outlined", on_click=C(
+                                    label_decide,
+                                    f"[{lookup_ref}, '{verdict}', '', lb_lookup.suggested, lb_lookup.confidence]"))
+                        select("Correct label", "lb_fix", "lb_fixes", 190, tip="The label this issue should have")
+                        with tipped("Record the chosen label as the correct one"):
+                            mui.Button("Use this label", size="small", variant="outlined", disabled=B("!lb_fix"),
+                                       on_click=C(label_decide, f"[{lookup_ref}, 'relabel', lb_fix, "
+                                                                "lb_lookup.suggested, lb_lookup.confidence]"))
             with react.If(value="lb_lookup.modules.groups.length"):
                 html.Div([B("'Module group labels, from the ' + lb_lookup.modules.source + ':'")],
                          style={"marginTop": "8px", "fontWeight": 600})
@@ -1431,7 +1542,15 @@ def labels_view():
                tip="Only issues with this suggestion, or the ones marked “no label fits”")
         field("Min confidence", "lb_min", 130, tip="Only suggestions at or above this confidence, from 0 to 1")
         field("Filter titles", "lb_search", tip="Show issues whose title contains these words")
+        select("Review", "lb_review", "lb_reviews", 150, tip="Filter by your review verdict")
         html.Span([B("lb_shown")], style={"color": MUTED, "fontSize": "0.85rem"})
+        with tipped("Accept every unreviewed suggestion in this list at or above the cutoff, in one step. They are "
+                    "marked as accepted in bulk and left out of the reviewed accuracy"):
+            mui.Button(B("'Accept all shown (' + lb_bulk_n + ')'"), size="small", variant="outlined",
+                       disabled=B("!lb_bulk_n"), on_click=C(accept_all_shown))
+        with react.If(value="lb_rv.bulk"):
+            with tipped("Remove every bulk acceptance; individually reviewed verdicts stay"):
+                mui.Button("Clear bulk", size="small", on_click=C(clear_bulk))
     cell = {"verticalAlign": "top"}
     with table(330), mui.Table(size="small", sticky_header=True):
         head(("Issue", 70), ("Title", None), ("State", 70), ("Created", 95),
@@ -1441,7 +1560,8 @@ def labels_view():
              ("Measured", 85, "How often suggestions at this confidence were right on labeled issues"),
              ("Evidence", 110, "text: similar labeled issues and MRs; files: files changed by linked MRs; "
                               "mr: labels on linked MRs; field: the issue template"),
-             ("Linked MRs", 110))
+             ("Linked MRs", 90), ("Review", 165, "Mark the suggestion right or wrong; open the issue in the "
+                                                   "lookup above to give the correct label"))
         with mui.TableBody():
             with react.For(items="lb_rows", name="r"):
                 with mui.TableRow(key=B("r.key"), hover=True):
@@ -1460,6 +1580,19 @@ def labels_view():
                     mui.TableCell([B("r.expected")], style=cell)
                     mui.TableCell([B("r.evidence")], style={**cell, **SMALL})
                     mui.TableCell([B("r.linked_mrs")], style={**cell, **SMALL})
+                    with mui.TableCell(style=cell):
+                        with react.If(value="lb_decisions[r.issue]"):
+                            pill("lb_decisions[r.issue].text", ACCENT, ACCENT_TINT)
+                            mui.Button("Undo", size="small", style={"minWidth": 0, "padding": "0 4px"}, on_click=C(
+                                label_decide, "[r.issue, 'undecided', '', r.suggested, r.confidence]"))
+                        with react.If(value="!lb_decisions[r.issue]"):
+                            with html.Div(style={"display": "flex", "gap": "4px"}):
+                                compact = {"minWidth": 0, "padding": "0 6px", "fontSize": "0.72rem"}
+                                mui.Button(B("r.fits ? 'Right' : 'Agree'"), size="small", variant="outlined",
+                                           style=compact, on_click=C(
+                                               label_decide, "[r.issue, 'right', '', r.suggested, r.confidence]"))
+                                mui.Button("Wrong", size="small", variant="outlined", style=compact, on_click=C(
+                                    label_decide, "[r.issue, 'wrong', '', r.suggested, r.confidence]"))
 
 
 
@@ -1656,6 +1789,7 @@ with MuiLayout(server, theme=THEME) as layout:
                         view()
 
 refresh_rules()
+refresh_label_review()
 refresh_labels()
 load_dashboard()
 on_dep_filters(state.dep_outcome, state.dep_search)
