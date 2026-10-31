@@ -53,6 +53,9 @@ class Briefing:
             conf = json.loads((ROOT / "data/rules_confidence.json").read_text())["rules"]
             sys.path.insert(0, str(ROOT / "app"))
             from data import rule_key
+            sys.path.insert(0, str(ROOT))
+            from rule_groups import canonical_ids
+            canon = canonical_ids()
             by_id, owner = {}, {}
             for i, r in enumerate(rules, 1):
                 rid = r.get("id") or f"R{i:03d}"
@@ -61,7 +64,7 @@ class Briefing:
                               "estimate": (c.get("adjusted") or {}).get("adjusted"),
                               "automated": c.get("automated", False)}
                 for m in r["members"]:
-                    owner[m] = rid
+                    owner[m] = canon.get(rid, rid)
             per_path = defaultdict(list)
             with open(ROOT / "data/review_examples.jsonl") as f:
                 for line in f:

@@ -5,7 +5,8 @@ Candidate pairs: rules whose member centroids are close (cosine >= --cutoff). A 
 each pair in both orders ("a comment applying one also applies the other"); when the two orders
 disagree, gpt-oss:120b decides. Confirmed pairs are joined transitively. Each group's canonical rule is the one with the most MRs.
 
-Writes data/rule_groups.json: {"groups": [[rule id, ...], ...], "pairs": [...]}.
+Writes data/rule_groups.json: {"groups": [[rule id, ...], ...], "pairs": [...]}. Verdicts are cached in
+data/rule_pair_cache.json, so a lower cutoff or an interrupted run only asks about new pairs.
 
 Usage:
   python rules/merge_rules.py [--cutoff 0.85]
@@ -55,7 +56,10 @@ def main():
     rules, _key, vec, _labels, _examples = M.load()
     C = M.centroids(rules, vec)
     S = C @ C.T
-    pairs = [(i, j) for i in range(len(rules)) for j in range(i + 1, len(rules)) if S[i, j] >= args.cutoff]
+    pairs = sorted(((i, j) for i in range(len(rules)) for j in range(i + 1, len(rules)) if S[i, j] >= args.cutoff),
+                   key=lambda p: -S[p])
+    cache_path = ROOT / "data/rule_pair_cache.json"
+    cache = json.loads(cache_path.read_text()) if cache_path.exists() else {}
     print(f"{len(pairs)} candidate pairs at centroid similarity >= {args.cutoff}", flush=True)
     parent = list(range(len(rules)))
 
@@ -67,10 +71,14 @@ def main():
 
     confirmed = []
     for n, (i, j) in enumerate(pairs, 1):
-        ab, ba = same(rules[i]["rule"], rules[j]["rule"]), same(rules[j]["rule"], rules[i]["rule"])
-        if ab != ba:
-            ab = ba = same(rules[i]["rule"], rules[j]["rule"], "gpt-oss:120b")
-        if ab and ba:
+        key = f"{rules[i]['id']}|{rules[j]['id']}"
+        if key not in cache:
+            ab, ba = same(rules[i]["rule"], rules[j]["rule"]), same(rules[j]["rule"], rules[i]["rule"])
+            if ab != ba:
+                ab = ba = same(rules[i]["rule"], rules[j]["rule"], "gpt-oss:120b")
+            cache[key] = ab and ba
+            cache_path.write_text(json.dumps(cache, indent=0))
+        if cache[key]:
             confirmed.append((rules[i]["id"], rules[j]["id"], round(float(S[i, j]), 3)))
             parent[find(i)] = find(j)
         if n % 50 == 0:

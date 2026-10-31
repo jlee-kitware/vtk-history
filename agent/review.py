@@ -148,14 +148,20 @@ def rule_key(r):
 
 
 def load_rules(path="data/rules_verified.json", confidence="data/rules_confidence.json", skip_automated=True,
-               levels=True):
+               levels=True, dedupe=True):
     """Mined rules numbered in file order, with confidence levels.
 
-    Rules a tool enforces, or that contradict a configured tool, are left to the tool.
+    Rules a tool enforces, or that contradict a configured tool, are left to the tool. With dedupe, a rule
+    grouped as a duplicate of another (data/rule_groups.json) is dropped in favor of the canonical one.
     """
     rules = json.loads(Path(path).read_text())["rules"]
     for i, r in enumerate(rules, 1):
         r.setdefault("id", f"R{i:03d}")
+    if dedupe:
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+        from rule_groups import canonical_ids
+        canon = canonical_ids()
+        rules = [r for r in rules if canon.get(r["id"], r["id"]) == r["id"]]
     conf_path = Path(confidence)
     if (skip_automated or levels) and conf_path.exists():
         conf = json.loads(conf_path.read_text())["rules"]

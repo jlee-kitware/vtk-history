@@ -297,6 +297,9 @@ def rules_view():
                                 html.Div([B("r.rule")])
                                 html.Div([B("r.reason")], style={"color": MUTED, "fontSize": "0.76rem",
                                                                  "marginTop": "2px"})
+                                with react.If(value="r.also"):
+                                    html.Div([B("r.also")], style={"color": ACCENT, "fontSize": "0.76rem",
+                                                                   "marginTop": "2px"})
                             mui.TableCell([B("r.topic")])
                             mui.TableCell([B("r.mrs")])
                             mui.TableCell([B("r.last")])
@@ -374,6 +377,8 @@ def rule_detail():
                 html.Div(["Rationale: ", B("rule.rationale")], style={"marginTop": "12px"})
             html.Div(["Scope: ", B("rule.scope")])
             html.Div(["Support: ", B("rule.support")])
+            with react.If(value="rule.also"):
+                html.Div([B("rule.also")], style={"color": ACCENT})
             html.Div(["Reviewers: ", B("rule.reviewers")])
             with react.If(value="rule.conflicts.length"):
                 with html.Div(style={"marginTop": "12px"}):

@@ -10,6 +10,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import config  # noqa: E402
+from rule_groups import canonical_ids  # noqa: E402
 import csv
 import getpass
 import hashlib
@@ -34,6 +35,13 @@ def mr_url(iid):
     return f"{GITLAB}/merge_requests/{iid}" if iid else None
 
 
+def also_text(rule):
+    if not rule["also"]:
+        return ""
+    return "Also stated as " + ", ".join(f"{a['id']} ({a['support_mrs']} MRs)" for a in rule["also"]) + \
+        "; their comments count toward this rule's estimate"
+
+
 def rule_key(rule):
     return hashlib.sha1("|".join(sorted(rule["members"])).encode()).hexdigest()[:12]
 
@@ -49,6 +57,11 @@ class Store:
             r.setdefault("id", f"R{i:03d}")
             r["key"] = rule_key(r)
             r["conflicts"] = conflicts(r, self.by_symbol, repo)
+        canon = canonical_ids()
+        by_id = {r["id"]: r for r in self.rules}
+        for r in self.rules:
+            r["canonical"] = canon.get(r["id"], r["id"])
+            r["also"] = [by_id[x] for x, c in canon.items() if c == r["id"] and x != r["id"] and x in by_id]
         confidence = self._json("data/rules_confidence.json") or {"rules": {}}
         self.confidence = confidence["rules"]
         self.baseline_follow = confidence.get("baseline_follow")
@@ -83,6 +96,8 @@ class Store:
     def rule_rows(self):
         rows = []
         for r in self.rules:
+            if r["canonical"] != r["id"]:
+                continue
             c = self.curated.get(r["key"], {})
             conf = self.confidence.get(r["key"], {})
             rows.append({"id": r["id"], "key": r["key"], "rule": c.get("rule") or r["rule"] or "", "topic": r["topic"],
@@ -93,13 +108,13 @@ class Store:
                          "guide_conflict": (conf.get("doc") or {}).get("verdict") == "contradicts"
                          or (conf.get("tool") or {}).get("verdict") == "contradicts",
                          "automated": conf.get("automated", False),
-                         "automatable": bool(conf.get("automatable"))})
+                         "automatable": bool(conf.get("automatable")), "also": also_text(r)})
         for d in self.doc_rules:
             c = self.curated.get(d["key"], {})
             rows.append({"id": d["id"], "key": d["key"], "rule": c.get("rule") or d["rule"], "topic": "developer guide",
                          "mrs": 0, "reviewers": 0, "last": "", "decision": c.get("decision", "undecided"),
                          "mixed": False, "deprecated": False, "level": "documented", "score": 0,
-                         "guide_conflict": False, "automated": False, "automatable": False,
+                         "guide_conflict": False, "automated": False, "automatable": False, "also": "",
                          "reason": f"Stated in the developer guide ({d['file']}, {d['section'] or 'top'}); "
                                    "not raised in the reviews we mined"})
         rank = {"high": 0, "medium": 1, "low": 2, "documented": 3}
@@ -142,6 +157,7 @@ class Store:
             "doc_url": (conf.get("doc") or {}).get("url"), "doc_file": (conf.get("doc") or {}).get("file"),
             "decision": c.get("decision", "undecided"), "note": c.get("note", ""),
             "decided_by": c.get("by", ""), "decided_at": c.get("at", ""),
+            "also": also_text(r) if r["canonical"] == r["id"] else f"Same rule as {r['canonical']}, which is listed",
         }
 
     def factors(self, conf):
