@@ -1154,7 +1154,7 @@ def briefing_view():
     with react.If(value="br_mr"):
         with html.Div(style={"fontSize": "0.95rem", "marginBottom": "4px"}):
             link("'!' + br_mr.iid", "br_mr.url")
-            html.Span([" ", B("br_mr.title"), " (", B("br_mr.author"), ", ", B("br_mr.state"), ", opened ",
+            html.Span([" ", B("br_mr.title"), " (", B("br_mr.author"), ", ", B("br_mr.state === 'opened' ? 'open' : br_mr.state"), ", opened ",
                        B("br_mr.created"), ")"])
     with react.If(value="br"):
         caption([B("br.history_note")], marginBottom="10px")

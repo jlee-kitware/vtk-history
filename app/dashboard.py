@@ -65,7 +65,7 @@ def read_mirror():
         mrs[m["iid"]] = {"iid": m["iid"], "title": m["title"], "state": m["state"], "draft": m["draft"],
                          "created": m["created_at"], "merged": m["merged_at"], "updated": m["updated_at"],
                          "author": (m.get("author") or {}).get("username", ""), "target": m["target_branch"],
-                         "url": m["web_url"]}
+                         "url": m["web_url"], "sha": m.get("sha")}
     for f in (MIRROR / "mr_files").glob("*.json"):
         files[int(f.stem)] = json.loads(f.read_text())
     for f in (MIRROR / "issues").glob("*.json"):
@@ -74,7 +74,18 @@ def read_mirror():
     return mrs, issues, files
 
 
-def review_queue(mrs, people, files, expertise, as_of):
+def changed_files(store, m, people, files):
+    """Files an MR changes: the reviewer table, the mirror's list, or a diff of its fetched head."""
+    known = people.get(m["iid"], {}).get("files") or files.get(m["iid"])
+    if known or not m.get("sha"):
+        return known or []
+    try:
+        return store.mr_paths(m["sha"])
+    except Exception:
+        return []
+
+
+def review_queue(store, mrs, people, files, expertise, as_of):
     opened = [m for m in mrs.values() if m["state"] == "opened" and m["target"] == "master"]
     ready = [m for m in opened if not m["draft"]]
     waiting = [m for m in ready if not people.get(m["iid"], {}).get("reviewers")]
@@ -84,7 +95,7 @@ def review_queue(mrs, people, files, expertise, as_of):
     abandoned_since = (as_of - timedelta(days=365)).isoformat()
     rows = []
     for m in sorted(recent, key=lambda m: m["created"])[:QUEUE_ROWS]:
-        changed = people.get(m["iid"], {}).get("files") or files.get(m["iid"]) or []
+        changed = changed_files(store, m, people, files)
         suggested = expertise.suggest(changed, as_of.isoformat(), exclude={m["author"]}, top=3) if changed else []
         rows.append({"iid": m["iid"], "title": m["title"], "author": m["author"], "url": m["url"],
                      "age": (as_of - when(m["created"])).days,
@@ -184,7 +195,7 @@ def compute(store, expertise):
     return {
         "stamp": inputs_stamp(), "as_of": stamp[:10], "computed": datetime.now().isoformat(timespec="minutes"),
         "counts": {"mrs": len(mrs), "issues": len(issues), "documents": meta.get("count", 0)},
-        "queue": review_queue(mrs, people, files, expertise, as_of),
+        "queue": review_queue(store, mrs, people, files, expertise, as_of),
         "activity": activity(mrs, people, issues, as_of),
         "reviewers": reviewers(people, as_of, is_bot, keys),
         "deprecations": deprecations_due(store.deprecation_rows()),
