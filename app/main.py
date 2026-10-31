@@ -2,6 +2,8 @@
 """VTK review history explorer (trame v4, React client with MUI).
 
 Views:
+  Dashboard     what needs attention (review queue, review concentration, triage, deprecations) and how the
+                project is changing (activity, review timing, rising and fading areas)
   Review        an MR revision's diff with the agent's comments and the reviewers' comments on the lines
                 they concern; rate each agent comment valid, wrong, or unsure (saved to ratings/ratings.jsonl);
                 run the agent on any revision
@@ -40,6 +42,7 @@ from review_data import Reviews, comment_key  # noqa: E402
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "people"))
 from expertise import Expertise, reason  # noqa: E402
 from briefing import Briefing  # noqa: E402
+import dashboard  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "agent"))
 import tool_checks  # noqa: E402
@@ -86,11 +89,12 @@ LEVEL_BG = "({high: '#E6F4EA', documented: '#E1F0F6', medium: '#FFF3D6', low: '#
 TONE = "({good: '#1A7F37', bad: '#B42339', neutral: '" + MUTED + "'})"
 DECISION_COLOR = {"accepted": "success", "edited": "primary", "rejected": "error", "undecided": "default"}
 TABS = [
+    ("dashboard", "Dashboard", "What needs attention in the review queue and triage, and how VTK is changing"),
     ("briefing", "Briefing", "What VTK's history says about one merge request: related work, reviewers, conventions, "
                              "deprecated APIs, and recent changes to its files"),
-    ("review", "Review", "A merge request's diff with the real reviewers' comments and the review agent's comments; "
+    ("review", "Review agent", "A merge request's diff with the real reviewers' comments and the review agent's comments; "
                          "rate the agent's comments"),
-    ("rules", "Rules", "Review conventions distilled from past reviewer comments, with how often authors act on "
+    ("rules", "Conventions", "Review conventions distilled from past reviewer comments, with how often authors act on "
                        "them; accept, edit or reject each"),
     ("deprecations", "Deprecations", "VTK APIs that were deprecated, in which version, and whether they were removed"),
     ("trends", "Trends", "Terms, code areas, themes and GitLab labels whose share of merge requests, issues or "
@@ -99,6 +103,8 @@ TABS = [
                          "issues maintainers already labeled"),
     ("search", "Search", "Search merge requests, issues, review threads, forum topics, blog posts and docs"),
 ]
+NAV = [("Overview", ["dashboard"]), ("Merge requests", ["briefing"]), ("Project", ["trends", "labels", "deprecations"]),
+       ("Knowledge", ["rules", "search"]), ("Experiments", ["review"])]
 MAX_ROWS = 400
 
 
@@ -107,7 +113,7 @@ def options(values):
 
 
 state.update({
-    "tab": "briefing",
+    "tab": "dashboard",
     "rule_rows": [], "rule_search": "", "rule_topic": "", "rule_decision": "", "rule_level": "",
     "topics": options(sorted({r["topic"] for r in store.rules})),
     "decisions": options(["undecided", *DECISIONS]),
@@ -1451,39 +1457,199 @@ def labels_view():
                     mui.TableCell([B("r.linked_mrs")], style={**cell, **SMALL})
 
 
+
+# ----------------------------------------------------------------------------- Dashboard
+
+def svg_uri(xs, ys, unit=""):
+    return "data:image/svg+xml;utf8," + quote(line_svg(xs, ys, unit, width=460, height=210))
+
+
+def load_dashboard():
+    d = dashboard.summary(store, expertise)
+    a = d["activity"]
+    d["charts"] = [
+        {"title": "Merge requests merged per month", "src": svg_uri(a["months"], a["merged"])},
+        {"title": "Median days to a first review, by month opened", "src": svg_uri(a["months"], a["days_to_review"], " d")},
+        {"title": "Median days from opening to merge, by month merged", "src": svg_uri(a["months"], a["days_to_merge"], " d")},
+        {"title": "Issues filed per month", "src": svg_uri(a["months"], a["issues"])},
+    ]
+    top = max((r["mrs"] for r in d["reviewers"]["load"]), default=1)
+    for r in d["reviewers"]["load"]:
+        r["width"] = f"{100 * r['mrs'] / top:.0f}%"
+    state.dash = d
+
+
+def open_brief(iid):
+    state.tab, state.br_iid = "briefing", str(iid)
+    load_brief(iid)
+
+
+def go(tab):
+    return C(f"tab = '{tab}'")
+
+
+def stat(value_expr, label, tip):
+    with tipped(tip):
+        with html.Div(style={"flex": "1", "minWidth": "110px", "padding": "8px 10px", "border": f"1px solid {LINE}",
+                             "borderRadius": "6px", "background": "#F7F9FB"}):
+            html.Div([B(value_expr)], style={"fontSize": "1.35rem", "fontWeight": 600, "color": INK})
+            html.Div(label, style={**SMALL, "marginTop": "2px"})
+
+
+def card(title, subtitle=None, action=None):
+    box = html.Div(style={**CARD, "margin": "0 0 16px"})
+    with box:
+        with html.Div(style={"display": "flex", "alignItems": "baseline", "gap": "8px", "marginBottom": "6px"}):
+            html.Span(title, style={"fontWeight": 600, "fontSize": "0.95rem"})
+            if subtitle:
+                html.Span(subtitle, style=SMALL)
+            if action:
+                html.Div(style={"flex": "1"})
+                mui.Button(action[0], size="small", on_click=go(action[1]))
+    return box
+
+
+def dashboard_view():
+    with react.If(value="dash"):
+        with html.Div(style={**CARD, "margin": "0 0 16px", "display": "flex", "flexWrap": "wrap", "gap": "6px 18px",
+                             "alignItems": "center"}):
+            html.Span([B("'Data as of ' + dash.as_of + ': ' + dash.counts.mrs.toLocaleString() + ' merge requests, ' "
+                         "+ dash.counts.issues.toLocaleString() + ' issues, ' + dash.counts.documents.toLocaleString() "
+                         "+ ' searchable documents'")], style={"fontWeight": 500})
+            with react.For(items="dash.measured", name="m"):
+                with html.Span(key=B("m.tool"), style=SMALL):
+                    html.Span([B("m.tool + ': '")], style={"fontWeight": 600, "color": INK})
+                    html.Span([B("m.result")])
+        with html.Div(style={"display": "grid", "gridTemplateColumns": "repeat(auto-fit, minmax(460px, 1fr))",
+                             "gap": "16px", "alignItems": "start"}):
+            with html.Div():
+                html.Div("Needs attention", style={"fontWeight": 600, "color": MUTED, "fontSize": "0.8rem",
+                                                    "textTransform": "uppercase", "margin": "0 0 8px"})
+                with card("Review queue", "merge requests into master"):
+                    with html.Div(style={"display": "flex", "gap": "8px", "flexWrap": "wrap", "marginBottom": "10px"}):
+                        stat("dash.queue.open", "open", "Open merge requests targeting master")
+                        stat("dash.queue.drafts", "drafts", "Open merge requests marked draft")
+                        stat("dash.queue.waiting_recent + ' / ' + dash.queue.waiting",
+                             "no review yet (90 days / all)",
+                             "Ready merge requests with no comment from anyone but their author, opened in the last "
+                             "90 days and in total")
+                        stat("dash.queue.stale", "quiet 60+ days", "Ready merge requests with no activity in 60 days")
+                    caption("Opened in the last 90 days with no review yet, oldest first, and who to ask: the "
+                            "suggested reviewers' median time to a first reply is in parentheses.",
+                            marginBottom="6px")
+                    with mui.Table(size="small", style={"tableLayout": "fixed", "width": "100%"}):
+                        head(("MR", 64), ("Title", None), ("Age", 52), ("Suggested reviewers", None), ("", 64))
+                        with mui.TableBody():
+                            with react.For(items="dash.queue.rows", name="r"):
+                                with mui.TableRow(key=B("r.iid"), hover=True):
+                                    with mui.TableCell():
+                                        link("'!' + r.iid", "r.url")
+                                    with mui.TableCell():
+                                        html.Div([B("r.title")])
+                                        html.Div([B("r.author")], style=SMALL)
+                                    mui.TableCell([B("r.age + ' d'")])
+                                    mui.TableCell([B("r.reviewers")], style={**SMALL, "overflowWrap": "anywhere"})
+                                    with mui.TableCell():
+                                        with tipped("Open this merge request's briefing"):
+                                            mui.Button("Brief", size="small", on_click=C(open_brief, "[r.iid]"))
+                with card("Review concentration", "last 12 months"):
+                    caption("Modules with at least 5 reviewed merge requests where one person did 75% or more of "
+                            "the reviews.", marginBottom="6px")
+                    with mui.Table(size="small", style={"tableLayout": "fixed", "width": "100%"}):
+                        head(("Module", None), ("MRs", 48), ("Reviewer", None), ("Share", 56), ("Others", 56))
+                        with mui.TableBody():
+                            with react.For(items="dash.reviewers.thin", name="r"):
+                                with mui.TableRow(key=B("r.module")):
+                                    mui.TableCell([B("r.module")], style={"fontFamily": MONO, "fontSize": "0.8rem"})
+                                    mui.TableCell([B("r.mrs")])
+                                    mui.TableCell([B("r.reviewer")])
+                                    mui.TableCell([B("r.share")])
+                                    mui.TableCell([B("r.others")])
+                with react.If(value="dash.triage.open"):
+                    with card("Issue triage", None, ("Review suggestions", "labels")):
+                        html.Div([B("dash.triage.open.toLocaleString() + ' open issues; ' + dash.triage.open_labeled + "
+                                    "' carry an area label. ' + dash.triage.open_added + ' more have a suggestion at "
+                                    "confidence ' + dash.triage.cutoff + ' or above, which was right ' + "
+                                    "dash.triage.precision + ' of the time on issues maintainers had labeled.'")],
+                                 style={"lineHeight": "1.5"})
+                with card("Deprecations due", None, ("All deprecations", "deprecations")):
+                    html.Div([B("dash.deprecations.due + ' APIs deprecated in ' + dash.deprecations.through + "
+                                "' or earlier are still in the code.'")], style={"marginBottom": "4px"})
+                    with react.For(items="dash.deprecations.rows", name="r"):
+                        with html.Div(key=B("r.api"), style={"display": "flex", "gap": "8px", **ROW}):
+                            html.Span([B("r.api")], style={"fontFamily": MONO, "fontSize": "0.8rem"})
+                            html.Span([B("'deprecated in ' + r.version")], style=SMALL)
+                            link("'MR'", "r.url")
+            with html.Div():
+                html.Div("How VTK is changing", style={"fontWeight": 600, "color": MUTED, "fontSize": "0.8rem",
+                                                        "textTransform": "uppercase", "margin": "0 0 8px"})
+                with card("Activity", "last 24 months"):
+                    with html.Div(style={"display": "grid", "gridTemplateColumns": "repeat(auto-fit, minmax(300px, 1fr))",
+                                         "gap": "10px"}):
+                        with react.For(items="dash.charts", name="c"):
+                            with html.Div(key=B("c.title")):
+                                html.Div([B("c.title")], style={**SMALL, "fontWeight": 600, "color": INK})
+                                html.Img(src=B("c.src"), alt=B("c.title"), style={"width": "100%", "maxWidth": "100%"})
+                with card("Reviews in the last 90 days", "merge requests each person commented on"):
+                    with react.For(items="dash.reviewers.load", name="r"):
+                        with html.Div(key=B("r.user"), style={"display": "flex", "alignItems": "center", "gap": "8px",
+                                                              "margin": "3px 0"}):
+                            html.Span([B("r.user")], style={"width": "150px", "fontSize": "0.84rem"})
+                            with html.Div(style={"flex": "1", "background": "#EEF1F5", "borderRadius": "3px"}):
+                                html.Div(style={"width": B("r.width"), "height": "10px", "background": ACCENT,
+                                                "borderRadius": "3px"})
+                            html.Span([B("r.mrs")], style={**SMALL, "width": "36px", "textAlign": "right"})
+                with card("Rising and fading", "share of merge requests, last 2 years against before",
+                          ("Trends", "trends")):
+                    for kind, color in (("emerging", "success"), ("fading", "default")):
+                        with html.Div(style={"display": "flex", "flexWrap": "wrap", "gap": "6px", "alignItems": "center",
+                                             "margin": "4px 0"}):
+                            html.Span("Rising" if kind == "emerging" else "Fading",
+                                      style={**SMALL, "width": "52px", "fontWeight": 600})
+                            with react.For(items=f"dash.trends.{kind}", name="t"):
+                                mui.Chip(key=B("t.name"), label=B("t.name + ' ' + t.ratio + 'x'"), size="small",
+                                         color=color, variant="outlined")
+    with react.If(value="!dash"):
+        caption("Loading the dashboard...")
+
+
 # ----------------------------------------------------------------------------- Layout
 
 with MuiLayout(server, theme=THEME) as layout:
     mui.GlobalStyles(styles=f"@import url('{FONTS}'); body {{ background: {CANVAS}; }}")
+    tips = {value: (label, tip) for value, label, tip in TABS}
+    views = {"dashboard": dashboard_view, "briefing": briefing_view, "review": review_view, "rules": rules_view,
+             "deprecations": deprecations_view, "trends": trends_view, "labels": labels_view, "search": search_view}
     with html.Div(style={"display": "flex", "flexDirection": "column", "height": "100vh", "background": CANVAS}):
         with html.Header(style={"background": SURFACE, "borderBottom": f"1px solid {LINE}", "position": "relative"}):
-            with html.Div(style={"display": "flex", "alignItems": "center", "height": "52px",
-                                 "padding": "0 20px", "gap": "28px"}):
-                with html.Div(style={"display": "flex", "alignItems": "baseline", "gap": "8px"}):
-                    html.Span("VTK review history", style={"fontWeight": 600, "fontSize": "1.05rem",
-                                                           "color": INK, "letterSpacing": "-0.01em"})
-                    html.Span("from GitLab and Discourse", style={"color": MUTED, "fontSize": "0.8rem"})
-                with html.Nav(style={"display": "flex", "gap": "4px", "height": "100%"}):
-                    for value, label, tip in TABS:
-                        with tipped(tip, "bottom"):
-                          html.Button(label, on_click=C(f"tab = '{value}'"), style={
-                            "border": "none", "background": "none", "cursor": "pointer", "fontFamily": SANS,
-                            "fontSize": "0.9rem", "padding": "0 12px", "height": "100%",
-                            "fontWeight": B(f"tab === '{value}' ? 600 : 500"),
-                            "color": B(f"tab === '{value}' ? '{INK}' : '{MUTED}'"),
-                            "borderBottom": B(f"tab === '{value}' ? '2px solid {ACCENT}' : '2px solid transparent'"),
-                        })
+            with html.Div(style={"display": "flex", "alignItems": "baseline", "height": "52px", "padding": "0 20px",
+                                 "gap": "8px", "lineHeight": "52px"}):
+                html.Span("VTK review history", style={"fontWeight": 600, "fontSize": "1.05rem", "color": INK,
+                                                       "letterSpacing": "-0.01em"})
+                html.Span("from GitLab, Discourse, the blog and the VTK wiki", style={"color": MUTED, "fontSize": "0.8rem"})
             mui.LinearProgress(style={"position": "absolute", "left": 0, "right": 0, "bottom": "-1px", "height": "2px",
                                       "visibility": B("trame__busy ? 'visible' : 'hidden'")})
-        with html.Main(style={"flex": "1", "overflow": "auto", "padding": "16px 20px"}):
-            for value, view in (("briefing", briefing_view), ("review", review_view), ("rules", rules_view),
-                                ("deprecations", deprecations_view), ("trends", trends_view),
-                                ("labels", labels_view), ("search", search_view)):
-                with react.If(value=f"tab === '{value}'"):
-                    view()
+        with html.Div(style={"flex": "1", "display": "flex", "minHeight": 0}):
+            with html.Nav(style={"width": "196px", "flex": "none", "background": SURFACE,
+                                 "borderRight": f"1px solid {LINE}", "padding": "12px 10px", "overflowY": "auto"}):
+                for group, keys in NAV:
+                    html.Div(group, style={"fontSize": "0.72rem", "fontWeight": 600, "color": MUTED,
+                                           "textTransform": "uppercase", "letterSpacing": "0.04em",
+                                           "margin": "12px 8px 4px"})
+                    for value in keys:
+                        label, tip = tips[value]
+                        with tipped(tip, "right"):
+                            mui.ListItemButton([label], selected=B(f"tab === '{value}'"), dense=True,
+                                               on_click=C(f"tab = '{value}'"),
+                                               style={"fontWeight": B(f"tab === '{value}' ? 600 : 400")})
+            with html.Main(style={"flex": "1", "overflow": "auto", "padding": "16px 20px", "minWidth": 0}):
+                for value, view in views.items():
+                    with react.If(value=f"tab === '{value}'"):
+                        view()
 
 refresh_rules()
 refresh_labels()
+load_dashboard()
 on_dep_filters(state.dep_outcome, state.dep_search)
 on_trend_filters(state.trend_what, state.trend_source, state.trend_kind, state.trend_common)
 
