@@ -1,6 +1,6 @@
 """OpenAI chat for the review agent, returning messages in the shape Ollama's /api/chat returns.
 
-A model name starting with gpt- or o<digit> goes to OpenAI; the key comes from OPENAI_API_KEY (or OPENAI_AI_KEY) in
+A model name starting with gpt- or o<digit> goes to OpenAI, except Ollama's tagged names and gpt-oss; the key comes from OPENAI_API_KEY (or OPENAI_AI_KEY) in
 the environment or the repository's .env. Token use is appended to data/logs/openai_usage.jsonl, and calls stop
 once the logged cost reaches OPENAI_BUDGET_USD (default 2).
 """
@@ -41,7 +41,9 @@ def spent():
 
 
 def is_openai(model):
-    return bool(re.match(r"(gpt-|o\d)", model or ""))
+    """OpenAI's names (gpt-..., o1, o3-mini); a tagged name (name:tag) or the open gpt-oss family is Ollama's."""
+    model = model or ""
+    return bool(re.match(r"(gpt-|o\d)", model)) and ":" not in model and not model.startswith("gpt-oss")
 
 
 def _key():
