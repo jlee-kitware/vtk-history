@@ -52,6 +52,12 @@ def mirror_stamp():
     return json.loads((MIRROR / "sync.json").read_text())["updated_after"]
 
 
+def inputs_stamp():
+    """Changes when the mirror syncs or a table the dashboard reads is rebuilt."""
+    tables = [ROOT / "data/people/mrs.jsonl", ROOT / "data/labels/area_eval.json"]
+    return mirror_stamp() + "".join(f"|{p.stat().st_mtime:.0f}" for p in tables if p.exists())
+
+
 def read_mirror():
     mrs, issues, files = {}, [], {}
     for f in (MIRROR / "merge_requests").glob("*.json"):
@@ -74,7 +80,8 @@ def review_queue(mrs, people, files, expertise, as_of):
     waiting = [m for m in ready if not people.get(m["iid"], {}).get("reviewers")]
     recent_since = (as_of - timedelta(days=QUEUE_DAYS)).isoformat()
     recent = [m for m in waiting if m["created"] >= recent_since]
-    stale_since = (as_of - timedelta(days=60)).isoformat()
+    stalled_since = (as_of - timedelta(days=60)).isoformat()
+    abandoned_since = (as_of - timedelta(days=365)).isoformat()
     rows = []
     for m in sorted(recent, key=lambda m: m["created"])[:QUEUE_ROWS]:
         changed = people.get(m["iid"], {}).get("files") or files.get(m["iid"]) or []
@@ -86,7 +93,8 @@ def review_queue(mrs, people, files, expertise, as_of):
                                             for s in suggested) or "no file list yet"})
     return {"open": len(opened), "drafts": len(opened) - len(ready), "waiting": len(waiting),
             "waiting_recent": len(recent), "days": QUEUE_DAYS,
-            "stale": sum(m["updated"] < stale_since for m in ready), "rows": rows}
+            "stalled": sum(abandoned_since <= m["updated"] < stalled_since for m in ready),
+            "abandoned": sum(m["updated"] < abandoned_since for m in ready), "rows": rows}
 
 
 def activity(mrs, people, issues, as_of):
@@ -174,7 +182,7 @@ def compute(store, expertise):
     people = expertise.by_iid
     meta = json.loads((ROOT / "data/index/meta.json").read_text())
     return {
-        "stamp": stamp, "as_of": stamp[:10], "computed": datetime.now().isoformat(timespec="minutes"),
+        "stamp": inputs_stamp(), "as_of": stamp[:10], "computed": datetime.now().isoformat(timespec="minutes"),
         "counts": {"mrs": len(mrs), "issues": len(issues), "documents": meta.get("count", 0)},
         "queue": review_queue(mrs, people, files, expertise, as_of),
         "activity": activity(mrs, people, issues, as_of),
@@ -189,7 +197,7 @@ def compute(store, expertise):
 def summary(store, expertise):
     if CACHE.exists():
         cached = json.loads(CACHE.read_text())
-        if cached.get("stamp") == mirror_stamp():
+        if cached.get("stamp") == inputs_stamp():
             return cached
     data = compute(store, expertise)
     CACHE.write_text(json.dumps(data))

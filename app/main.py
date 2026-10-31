@@ -1533,7 +1533,10 @@ def dashboard_view():
                              "no review yet (90 days / all)",
                              "Ready merge requests with no comment from anyone but their author, opened in the last "
                              "90 days and in total")
-                        stat("dash.queue.stale", "quiet 60+ days", "Ready merge requests with no activity in 60 days")
+                        stat("dash.queue.stalled", "stalled: quiet 60 days to a year",
+                             "Ready merge requests whose last activity was between 60 days and a year ago")
+                        stat("dash.queue.abandoned", "abandoned: quiet over a year",
+                             "Ready merge requests with no activity for more than a year; candidates to close")
                     caption("Opened in the last 90 days with no review yet, oldest first, and who to ask: the "
                             "suggested reviewers' median time to a first reply is in parentheses.",
                             marginBottom="6px")
